@@ -1,0 +1,14 @@
+/target
+
+# ESP-IDF generated files
+/.embuild
+/build
+/sdkconfig
+/sdkconfig.old
+
+# Editor and OS noise
+/.idea
+/.vscode
+*.swp
+*.swo
+.DS_Store

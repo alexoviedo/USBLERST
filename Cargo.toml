@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/usb2ble-fw",
+    "crates/usb2ble-core",
+    "crates/usb2ble-proto",
+    "crates/usb2ble-platform-espidf",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+publish = false
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+expect_used = "deny"
+unwrap_used = "deny"
