@@ -1,0 +1,17 @@
+[package]
+name = "usb2ble-platform-espidf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+usb2ble-core = { path = "../usb2ble-core" }
+usb2ble-proto = { path = "../usb2ble-proto" }
+
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-svc = "0.51.0"
+esp-idf-sys = "0.36.1"
+
+[lints]
+workspace = true
