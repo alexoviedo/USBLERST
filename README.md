@@ -19,3 +19,9 @@ USBLERST is a lean v1 Rust workspace for an ESP32-S3 USB-HID-to-BLE-gamepad brid
 ## Status
 
 This repository is in the bootstrap phase.
+
+## Development / CI
+
+In constrained cloud-agent environments where local Rust tooling is unavailable, GitHub Actions is the verification source of truth for this repository.
+
+See `docs/CLOUD_AGENT_DEVELOPMENT.md` for the required development flow and verification gate.

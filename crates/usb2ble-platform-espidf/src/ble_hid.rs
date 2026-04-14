@@ -14,6 +14,11 @@ pub const GENERIC_BLE_GAMEPAD16_PERSONA_NAME: &str = "generic_ble_gamepad_16";
 pub const GENERIC_BLE_GAMEPAD16_REPORT_MAP_LEN: usize = 66;
 
 /// The fixed HID report descriptor for the lean v1 generic BLE gamepad persona.
+///
+/// This contract is intentionally unitless. The descriptor does not include an
+/// extra `0x64` Unit item because the v1 persona only needs a stable,
+/// backend-neutral axis/hat/button shape and does not rely on any physical-unit
+/// semantics.
 pub const GENERIC_BLE_GAMEPAD16_REPORT_MAP: [u8; GENERIC_BLE_GAMEPAD16_REPORT_MAP_LEN] = [
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x05, // Usage (Game Pad)
