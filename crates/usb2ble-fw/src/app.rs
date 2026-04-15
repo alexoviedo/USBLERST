@@ -110,6 +110,33 @@ pub enum UsbPumpError {
     Ble(usb2ble_platform_espidf::ble_hid::BlePublishError),
 }
 
+/// The result of servicing at most one persona-oriented USB ingress event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbPersonaPumpOutcome {
+    /// No USB event was available.
+    Idle,
+    /// One non-publishing USB event was handled.
+    Handled(UsbServiceOutcome),
+    /// One input report was handled and the current persona-encoded BLE report was published.
+    Published {
+        /// The decoded and normalized input report.
+        report: usb2ble_core::runtime::GenericBleGamepad16Report,
+        /// The active output persona used for encoding.
+        persona: usb2ble_core::profile::OutputPersona,
+        /// The persona-encoded BLE report that was published.
+        encoded: usb2ble_platform_espidf::ble_hid::EncodedBleInputReport,
+    },
+}
+
+/// Errors that can occur while servicing at most one persona-oriented USB ingress event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbPersonaPumpError {
+    /// Handling the USB event failed before BLE publication.
+    Usb(UsbServiceError),
+    /// Publishing the persona-encoded BLE report failed.
+    Ble(usb2ble_platform_espidf::ble_hid::BlePublishError),
+}
+
 /// The result of servicing at most one top-level application action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppPumpOutcome {
@@ -502,6 +529,39 @@ impl App {
         }
     }
 
+    /// Services at most one USB ingress event and publishes persona-encoded applied input reports.
+    pub fn service_usb_once_persona(
+        &mut self,
+        usb_ingress: &mut impl usb2ble_platform_espidf::usb_host::UsbIngress,
+        ble_output: &mut impl usb2ble_platform_espidf::ble_hid::BlePersonaOutput,
+    ) -> Result<UsbPersonaPumpOutcome, UsbPersonaPumpError> {
+        let event = match usb_ingress.poll_event() {
+            Some(event) => event,
+            None => return Ok(UsbPersonaPumpOutcome::Idle),
+        };
+
+        let outcome = self
+            .handle_usb_event(event)
+            .map_err(UsbPersonaPumpError::Usb)?;
+
+        match outcome {
+            UsbServiceOutcome::InputApplied(report) => {
+                let persona = self.current_output_persona();
+                let encoded = self.current_encoded_ble_input_report();
+
+                self.publish_current_persona_report(ble_output)
+                    .map_err(UsbPersonaPumpError::Ble)?;
+
+                Ok(UsbPersonaPumpOutcome::Published {
+                    report,
+                    persona,
+                    encoded,
+                })
+            }
+            outcome => Ok(UsbPersonaPumpOutcome::Handled(outcome)),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Services at most one buffered console or USB action with buffered console priority.
     pub fn service_once_with_console_buffer(
@@ -585,8 +645,8 @@ mod tests {
     use super::{
         bootstrap_default, App, AppPumpError, AppPumpOutcome, BootstrapError, BufferedAppPumpError,
         BufferedAppPumpOutcome, BufferedConsoleError, BufferedConsoleOutcome, FrameServiceError,
-        ServiceError, ServiceOutcome, UsbPumpError, UsbPumpOutcome, UsbServiceError,
-        UsbServiceOutcome, APP_NAME,
+        ServiceError, ServiceOutcome, UsbPersonaPumpError, UsbPersonaPumpOutcome, UsbPumpError,
+        UsbPumpOutcome, UsbServiceError, UsbServiceOutcome, APP_NAME,
     };
     use core::cell::Cell;
     use usb2ble_core::hid_decode::DecodeError;
@@ -2644,6 +2704,163 @@ mod tests {
             }))
         );
         assert_eq!(ble_output.last_report, None);
+    }
+
+    #[test]
+    fn service_usb_once_persona_returns_idle_when_no_event_is_available() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        assert_eq!(
+            app.service_usb_once_persona(&mut usb_ingress, &mut ble_output),
+            Ok(UsbPersonaPumpOutcome::Idle)
+        );
+        assert_eq!(usb_ingress.poll_calls, 1);
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
+    }
+
+    #[test]
+    fn service_usb_once_persona_handles_non_input_event_without_publish() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let device_id = UsbDeviceId::new(51);
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: Some(UsbEvent::DeviceAttached(DeviceMeta {
+                device_id,
+                vendor_id: 1,
+                product_id: 2,
+            })),
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        assert_eq!(
+            app.service_usb_once_persona(&mut usb_ingress, &mut ble_output),
+            Ok(UsbPersonaPumpOutcome::Handled(
+                UsbServiceOutcome::DeviceAttached(device_id)
+            ))
+        );
+        assert_eq!(app.active_device(), Some(device_id));
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
+    }
+
+    #[test]
+    fn service_usb_once_persona_publishes_persona_and_encoded_report_for_input_event() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let device_id = UsbDeviceId::new(52);
+        let mut payload = [0_u8; 64];
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        assert_eq!(
+            app.handle_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+                device_id,
+                vendor_id: 1,
+                product_id: 2,
+            })),
+            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+        );
+        assert_eq!(
+            app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
+                device_id,
+                bytes: xy_descriptor_bytes(),
+                len: 18,
+            }),
+            Ok(UsbServiceOutcome::DescriptorStored {
+                device_id,
+                field_count: 2,
+            })
+        );
+
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        usb_ingress.next_event = Some(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let expected_report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        let expected_persona = app.current_output_persona();
+
+        assert_eq!(
+            app.service_usb_once_persona(&mut usb_ingress, &mut ble_output),
+            Ok(UsbPersonaPumpOutcome::Published {
+                report: expected_report,
+                persona: expected_persona,
+                encoded: app.current_encoded_ble_input_report(),
+            })
+        );
+        assert_eq!(ble_output.last_persona(), Some(expected_persona));
+        assert_eq!(
+            ble_output.last_wire(),
+            Some(app.current_encoded_ble_input_report())
+        );
+    }
+
+    #[test]
+    fn service_usb_once_persona_propagates_persona_output_failure() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let device_id = UsbDeviceId::new(53);
+        let mut payload = [0_u8; 64];
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        assert_eq!(
+            app.handle_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+                device_id,
+                vendor_id: 1,
+                product_id: 2,
+            })),
+            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+        );
+        assert_eq!(
+            app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
+                device_id,
+                bytes: xy_descriptor_bytes(),
+                len: 18,
+            }),
+            Ok(UsbServiceOutcome::DescriptorStored {
+                device_id,
+                field_count: 2,
+            })
+        );
+
+        ble_output.set_fail_with(BlePublishError::NotReady);
+
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        usb_ingress.next_event = Some(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        assert_eq!(
+            app.service_usb_once_persona(&mut usb_ingress, &mut ble_output),
+            Err(UsbPersonaPumpError::Ble(BlePublishError::NotReady))
+        );
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
     }
 
     #[test]
