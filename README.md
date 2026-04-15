@@ -28,6 +28,35 @@ cargo run -p usb2ble-fw -- --demo-host
 ```
 This demonstrates the end-to-end app pipeline from boot through console commands and USB ingress reports to persona-encoded BLE wire bytes.
 
+## Host Replay Mode
+
+Iterate quickly by replaying scripted USB events:
+```bash
+cargo run -p usb2ble-fw -- --replay-host path/to/script.txt
+```
+
+### Script Format
+
+- `ATTACH <device_id> <vendor_id> <product_id>`
+- `DESCRIPTOR <hex_bytes>`
+- `INPUT <report_id> <hex_bytes>`
+- `DETACH <device_id>`
+
+Example `script.txt`:
+```text
+# Attach a device
+ATTACH 101 1 2
+
+# Provide a report descriptor (Generic Desktop Gamepad)
+DESCRIPTOR 05 01 09 05 A1 01 05 01 09 30 09 31 15 81 25 7F 75 08 95 02 81 02 C0
+
+# Send an input report (X=5, Y=-10)
+INPUT 00 05 F6
+
+# Detach the device
+DETACH 101
+```
+
 ## Development / CI
 
 In constrained cloud-agent environments where local Rust tooling is unavailable, GitHub Actions is the verification source of truth for this repository.
