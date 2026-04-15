@@ -1035,6 +1035,15 @@ pub mod profile {
         GenericBleGamepad16,
     }
 
+    impl OutputPersona {
+        /// Returns the stable string identifier for this persona.
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::GenericBleGamepad16 => "generic_ble_gamepad_16",
+            }
+        }
+    }
+
     /// The fixed lean v1 profile identifier.
     pub const V1_PROFILE_ID: ProfileId = ProfileId::T16000mV1;
 
