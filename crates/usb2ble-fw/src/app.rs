@@ -4,7 +4,7 @@
 pub const APP_NAME: &str = "usb2ble-fw";
 
 /// The deterministic lean v1 firmware coordinator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
     runtime: usb2ble_core::runtime::RuntimeState,
     active_device: Option<usb2ble_platform_espidf::usb_host::UsbDeviceId>,
