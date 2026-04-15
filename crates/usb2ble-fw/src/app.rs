@@ -159,6 +159,26 @@ pub enum AppPumpError {
 
 /// The result of servicing at most one top-level buffered-console or USB action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferedPersonaAppPumpOutcome {
+    /// Neither buffered console nor USB had work to do.
+    Idle,
+    /// One buffered console action was serviced.
+    Console(BufferedConsoleOutcome),
+    /// One USB-side action was serviced.
+    Usb(UsbPersonaPumpOutcome),
+}
+
+/// Errors that can occur while servicing at most one buffered-console or USB action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferedPersonaAppPumpError {
+    /// Buffered console-side servicing failed.
+    Console(BufferedConsoleError),
+    /// USB-side servicing failed.
+    Usb(UsbPersonaPumpError),
+}
+
+/// The result of servicing at most one top-level buffered-console or USB action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferedAppPumpOutcome {
     /// Neither buffered console nor USB had work to do.
     Idle,
@@ -563,6 +583,34 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Services at most one buffered console or persona USB action with buffered console priority.
+    pub fn service_once_with_console_buffer_persona(
+        &mut self,
+        buffer: &mut usb2ble_platform_espidf::console_uart::FramedConsoleBuffer,
+        profile_store: &mut impl usb2ble_platform_espidf::nvs_store::ProfileStore,
+        bond_store: &mut impl usb2ble_platform_espidf::nvs_store::BondStore,
+        ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+        usb_ingress: &mut impl usb2ble_platform_espidf::usb_host::UsbIngress,
+        ble_output: &mut impl usb2ble_platform_espidf::ble_hid::BlePersonaOutput,
+    ) -> Result<BufferedPersonaAppPumpOutcome, BufferedPersonaAppPumpError> {
+        match self
+            .service_console_buffer_once(buffer, profile_store, bond_store, ble_state)
+            .map_err(BufferedPersonaAppPumpError::Console)?
+        {
+            BufferedConsoleOutcome::Responded(response) => {
+                return Ok(BufferedPersonaAppPumpOutcome::Console(
+                    BufferedConsoleOutcome::Responded(response),
+                ));
+            }
+            BufferedConsoleOutcome::Idle => {}
+        }
+
+        self.service_usb_once_persona(usb_ingress, ble_output)
+            .map(BufferedPersonaAppPumpOutcome::Usb)
+            .map_err(BufferedPersonaAppPumpError::Usb)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     /// Services at most one buffered console or USB action with buffered console priority.
     pub fn service_once_with_console_buffer(
         &mut self,
@@ -644,7 +692,8 @@ fn map_ble_link_state(
 mod tests {
     use super::{
         bootstrap_default, App, AppPumpError, AppPumpOutcome, BootstrapError, BufferedAppPumpError,
-        BufferedAppPumpOutcome, BufferedConsoleError, BufferedConsoleOutcome, FrameServiceError,
+        BufferedAppPumpOutcome, BufferedConsoleError, BufferedConsoleOutcome,
+        BufferedPersonaAppPumpError, BufferedPersonaAppPumpOutcome, FrameServiceError,
         ServiceError, ServiceOutcome, UsbPersonaPumpError, UsbPersonaPumpOutcome, UsbPumpError,
         UsbPumpOutcome, UsbServiceError, UsbServiceOutcome, APP_NAME,
     };
@@ -3896,5 +3945,301 @@ mod tests {
                 UsbServiceError::InvalidBufferLength { len: 65, max: 64 }
             )))
         );
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_prioritizes_console_over_usb() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: Some(UsbEvent::DeviceAttached(DeviceMeta {
+                device_id: UsbDeviceId::new(71),
+                vendor_id: 1,
+                product_id: 2,
+            })),
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        assert_eq!(buffer.push_rx_bytes(b"GET_INFO\n"), Ok(()));
+
+        let outcome = match app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("service_once_with_console_buffer_persona failed: {error:?}"),
+        };
+
+        match outcome {
+            BufferedPersonaAppPumpOutcome::Console(BufferedConsoleOutcome::Responded(
+                Response::Info(_),
+            )) => {}
+            _ => panic!("expected Info response, got {:?}", outcome),
+        }
+
+        assert!(buffer
+            .tx_bytes()
+            .windows(5)
+            .any(|window| window == b"INFO|"));
+        assert_eq!(app.active_device(), None);
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
+
+        let outcome2 = match app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("service_once_with_console_buffer_persona failed: {error:?}"),
+        };
+
+        assert_eq!(
+            outcome2,
+            BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
+                UsbServiceOutcome::DeviceAttached(UsbDeviceId::new(71))
+            ))
+        );
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_returns_usb_idle_when_both_sources_are_idle() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        let outcome = match app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("service_once_with_console_buffer_persona failed: {error:?}"),
+        };
+
+        assert_eq!(
+            outcome,
+            BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Idle)
+        );
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_publishes_persona_usb_report_when_console_is_idle()
+    {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+        let device_id = UsbDeviceId::new(72);
+
+        usb_ingress.next_event = Some(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+        if let Err(error) = app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            panic!("service_once_with_console_buffer_persona failed: {error:?}");
+        }
+
+        usb_ingress.next_event = Some(UsbEvent::ReportDescriptorReceived {
+            device_id,
+            bytes: xy_descriptor_bytes(),
+            len: 18,
+        });
+        if let Err(error) = app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            panic!("service_once_with_console_buffer_persona failed: {error:?}");
+        }
+
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        usb_ingress.next_event = Some(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let outcome = match app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("service_once_with_console_buffer_persona failed: {error:?}"),
+        };
+
+        let report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        let persona = OutputPersona::GenericBleGamepad16;
+        let encoded = encode_generic_ble_gamepad16_report(report);
+
+        assert_eq!(
+            outcome,
+            BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Published {
+                report,
+                persona,
+                encoded
+            })
+        );
+        assert_eq!(ble_output.last_persona(), Some(persona));
+        assert_eq!(ble_output.last_wire(), Some(encoded));
+        assert!(buffer.tx_bytes().is_empty());
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_wraps_console_buffer_errors() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        assert_eq!(buffer.push_rx_bytes(b"NOPE\n"), Ok(()));
+
+        let outcome = app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        );
+
+        assert_eq!(
+            outcome,
+            Err(BufferedPersonaAppPumpError::Console(
+                BufferedConsoleError::Buffer(FrameBufferError::Decode(FrameError::UnknownCommand))
+            ))
+        );
+        assert_eq!(buffer.rx_len(), 0);
+        assert!(buffer.tx_bytes().is_empty());
+        assert_eq!(ble_output.last_persona(), None);
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_wraps_persona_usb_publish_errors() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = FakeUsbIngress {
+            next_event: None,
+            poll_calls: 0,
+        };
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+        let device_id = UsbDeviceId::new(72);
+
+        usb_ingress.next_event = Some(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+        if let Err(error) = app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            panic!("service_once_with_console_buffer_persona failed: {error:?}");
+        }
+
+        usb_ingress.next_event = Some(UsbEvent::ReportDescriptorReceived {
+            device_id,
+            bytes: xy_descriptor_bytes(),
+            len: 18,
+        });
+        if let Err(error) = app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        ) {
+            panic!("service_once_with_console_buffer_persona failed: {error:?}");
+        }
+
+        ble_output.set_fail_with(BlePublishError::NotReady);
+
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        usb_ingress.next_event = Some(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let outcome = app.service_once_with_console_buffer_persona(
+            &mut buffer,
+            &mut profile_store,
+            &mut bond_store,
+            BleConnectionState::Connected,
+            &mut usb_ingress,
+            &mut ble_output,
+        );
+
+        assert_eq!(
+            outcome,
+            Err(BufferedPersonaAppPumpError::Usb(UsbPersonaPumpError::Ble(
+                BlePublishError::NotReady
+            )))
+        );
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
     }
 }
