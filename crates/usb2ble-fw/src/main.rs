@@ -150,17 +150,10 @@ fn parse_replay_script(script: &str) -> Result<Vec<ReplayCommand>, String> {
 
 #[cfg(not(target_os = "espidf"))]
 fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String> {
-    use usb2ble_platform_espidf::ble_hid::{BleConnectionState, PersonaWireRecordingBleOutput};
-    use usb2ble_platform_espidf::nvs_store::{MemoryBondStore, MemoryProfileStore};
-    use usb2ble_platform_espidf::usb_host::{DeviceMeta, QueuedUsbIngress, UsbDeviceId, UsbEvent};
+    use usb2ble_platform_espidf::ble_hid::BleConnectionState;
+    use usb2ble_platform_espidf::usb_host::{DeviceMeta, UsbDeviceId, UsbEvent};
 
-    let profile_store = MemoryProfileStore::new();
-    let _bond_store = MemoryBondStore::new();
-    let mut app_instance = App::bootstrap(&profile_store);
-
-    let mut usb_ingress = QueuedUsbIngress::new();
-    let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
-
+    let mut runtime = EmbeddedRuntimeState::new_for_host();
     let mut outcomes = Vec::new();
 
     for cmd in &commands {
@@ -170,33 +163,35 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
                 vendor_id,
                 product_id,
             } => {
-                usb_ingress.queue_event(UsbEvent::DeviceAttached(DeviceMeta {
+                runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
                     device_id: UsbDeviceId::new(*device_id),
                     vendor_id: *vendor_id,
                     product_id: *product_id,
                 }));
             }
             ReplayCommand::Descriptor(bytes) => {
-                let device_id = app_instance
+                let device_id = runtime
+                    .app
                     .active_device()
                     .ok_or("no active device for DESCRIPTOR")?;
                 let mut fixed_bytes = [0_u8; 64];
                 let len = bytes.len();
                 fixed_bytes[..len].copy_from_slice(bytes);
-                usb_ingress.queue_event(UsbEvent::ReportDescriptorReceived {
+                runtime.queue_usb_event(UsbEvent::ReportDescriptorReceived {
                     device_id,
                     bytes: fixed_bytes,
                     len,
                 });
             }
             ReplayCommand::Input { report_id, data } => {
-                let device_id = app_instance
+                let device_id = runtime
+                    .app
                     .active_device()
                     .ok_or("no active device for INPUT")?;
                 let mut fixed_bytes = [0_u8; 64];
                 let len = data.len();
                 fixed_bytes[..len].copy_from_slice(data);
-                usb_ingress.queue_event(UsbEvent::InputReportReceived {
+                runtime.queue_usb_event(UsbEvent::InputReportReceived {
                     device_id,
                     report_id: *report_id,
                     bytes: fixed_bytes,
@@ -204,12 +199,18 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
                 });
             }
             ReplayCommand::Detach(device_id) => {
-                usb_ingress.queue_event(UsbEvent::DeviceDetached(UsbDeviceId::new(*device_id)));
+                runtime.queue_usb_event(UsbEvent::DeviceDetached(UsbDeviceId::new(*device_id)));
             }
         }
 
-        match app_instance.service_usb_once_persona(&mut usb_ingress, &mut ble_output) {
-            Ok(outcome) => outcomes.push(outcome),
+        match runtime.step_persona(BleConnectionState::Connected) {
+            Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcomes.push(outcome),
+            Ok(app::BufferedPersonaAppPumpOutcome::Idle) => {
+                outcomes.push(app::UsbPersonaPumpOutcome::Idle)
+            }
+            Ok(app::BufferedPersonaAppPumpOutcome::Console(_)) => {
+                return Err("unexpected console outcome in replay".to_string())
+            }
             Err(e) => return Err(format!("usb pump failed: {:?}", e)),
         }
     }
@@ -217,67 +218,38 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
     Ok(ReplayResult {
         command_count: commands.len(),
         outcomes,
-        final_persona: app_instance.current_output_persona(),
-        final_report: app_instance.runtime().current_report(),
-        final_encoded: app_instance.current_encoded_ble_input_report(),
+        final_persona: runtime.app.current_output_persona(),
+        final_report: runtime.current_report(),
+        final_encoded: runtime.app.current_encoded_ble_input_report(),
     })
 }
 
 #[cfg(not(target_os = "espidf"))]
 fn run_host_demo() -> HostDemoResult {
-    use usb2ble_platform_espidf::ble_hid::{BleConnectionState, PersonaWireRecordingBleOutput};
-    use usb2ble_platform_espidf::console_uart::FramedConsoleBuffer;
-    use usb2ble_platform_espidf::nvs_store::{MemoryBondStore, MemoryProfileStore};
-    use usb2ble_platform_espidf::usb_host::{DeviceMeta, QueuedUsbIngress, UsbDeviceId, UsbEvent};
+    use usb2ble_platform_espidf::ble_hid::BleConnectionState;
+    use usb2ble_platform_espidf::usb_host::{DeviceMeta, UsbDeviceId, UsbEvent};
 
-    let mut app_instance = match app::bootstrap_default() {
-        Ok(app) => app,
-        Err(e) => panic!("demo bootstrap failed: {:?}", e),
-    };
+    let mut runtime = EmbeddedRuntimeState::new_for_host();
+    let boot_info = runtime.boot_info();
 
-    let mut console_buffer = FramedConsoleBuffer::new();
-    let mut profile_store = MemoryProfileStore::new();
-    let mut bond_store = MemoryBondStore::new();
-    let mut usb_ingress = QueuedUsbIngress::new();
-    let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
-
-    let boot_profile = app_instance.runtime().active_profile();
-    let boot_persona = app_instance.current_output_persona();
-    let boot_descriptor = app_instance.current_ble_persona_descriptor();
-    let boot_encoded = app_instance.current_encoded_ble_input_report();
-
-    if let Err(e) = console_buffer.push_rx_bytes(b"GET_INFO\n") {
+    if let Err(e) = runtime.push_console_bytes(b"GET_INFO\n") {
         panic!("demo console push failed: {:?}", e);
     }
 
-    let console_outcome = match app_instance.service_once_with_console_buffer_persona(
-        &mut console_buffer,
-        &mut profile_store,
-        &mut bond_store,
-        BleConnectionState::Connected,
-        &mut usb_ingress,
-        &mut ble_output,
-    ) {
+    let console_outcome = match runtime.step_persona(BleConnectionState::Connected) {
         Ok(app::BufferedPersonaAppPumpOutcome::Console(outcome)) => outcome,
         other => panic!("expected console outcome, got {:?}", other),
     };
-    let console_tx = console_buffer.tx_bytes().to_vec();
+    let console_tx = runtime.console_buffer.tx_bytes().to_vec();
 
     let device_id = UsbDeviceId::new(101);
 
-    usb_ingress.queue_event(UsbEvent::DeviceAttached(DeviceMeta {
+    runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
         device_id,
         vendor_id: 1,
         product_id: 2,
     }));
-    let usb_attach_outcome = match app_instance.service_once_with_console_buffer_persona(
-        &mut console_buffer,
-        &mut profile_store,
-        &mut bond_store,
-        BleConnectionState::Connected,
-        &mut usb_ingress,
-        &mut ble_output,
-    ) {
+    let usb_attach_outcome = match runtime.step_persona(BleConnectionState::Connected) {
         Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
@@ -287,19 +259,12 @@ fn run_host_demo() -> HostDemoResult {
         0x05, 0x01, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x01, 0x09, 0x30, 0x81, 0x02, 0x09,
         0x31, 0x81, 0x02,
     ]);
-    usb_ingress.queue_event(UsbEvent::ReportDescriptorReceived {
+    runtime.queue_usb_event(UsbEvent::ReportDescriptorReceived {
         device_id,
         bytes: descriptor_bytes,
         len: 18,
     });
-    let usb_descriptor_outcome = match app_instance.service_once_with_console_buffer_persona(
-        &mut console_buffer,
-        &mut profile_store,
-        &mut bond_store,
-        BleConnectionState::Connected,
-        &mut usb_ingress,
-        &mut ble_output,
-    ) {
+    let usb_descriptor_outcome = match runtime.step_persona(BleConnectionState::Connected) {
         Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
@@ -307,39 +272,32 @@ fn run_host_demo() -> HostDemoResult {
     let mut report_payload = [0_u8; 64];
     report_payload[0] = 0x05;
     report_payload[1] = 0xF6;
-    usb_ingress.queue_event(UsbEvent::InputReportReceived {
+    runtime.queue_usb_event(UsbEvent::InputReportReceived {
         device_id,
         report_id: 0,
         bytes: report_payload,
         len: 2,
     });
-    let usb_input_outcome = match app_instance.service_once_with_console_buffer_persona(
-        &mut console_buffer,
-        &mut profile_store,
-        &mut bond_store,
-        BleConnectionState::Connected,
-        &mut usb_ingress,
-        &mut ble_output,
-    ) {
+    let usb_input_outcome = match runtime.step_persona(BleConnectionState::Connected) {
         Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
 
     HostDemoResult {
-        boot_profile,
-        boot_persona,
-        boot_descriptor,
-        boot_encoded,
+        boot_profile: boot_info.active_profile,
+        boot_persona: boot_info.output_persona,
+        boot_descriptor: boot_info.ble_descriptor,
+        boot_encoded: boot_info.initial_encoded_report,
         console_outcome,
         console_tx,
         usb_attach_outcome,
         usb_descriptor_outcome,
         usb_input_outcome,
-        final_report: app_instance.runtime().current_report(),
-        final_persona: app_instance.current_output_persona(),
-        final_encoded: app_instance.current_encoded_ble_input_report(),
-        last_persona: ble_output.last_persona(),
-        last_wire: ble_output.last_wire(),
+        final_report: runtime.current_report(),
+        final_persona: runtime.app.current_output_persona(),
+        final_encoded: runtime.app.current_encoded_ble_input_report(),
+        last_persona: runtime.last_persona(),
+        last_wire: runtime.last_wire(),
     }
 }
 

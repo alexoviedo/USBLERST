@@ -288,6 +288,34 @@ impl EmbeddedRuntimeState {
             &mut self.ble_output,
         )
     }
+
+    /// Queues a USB event into the runtime ingress.
+    pub fn queue_usb_event(&mut self, event: usb2ble_platform_espidf::usb_host::UsbEvent) {
+        self.usb_ingress.queue_event(event);
+    }
+
+    /// Pushes raw bytes into the framed console buffer.
+    pub fn push_console_bytes(
+        &mut self,
+        input: &[u8],
+    ) -> Result<(), usb2ble_platform_espidf::console_uart::FrameBufferError> {
+        self.console_buffer.push_rx_bytes(input)
+    }
+
+    /// Returns the current normalized input report.
+    pub fn current_report(&self) -> usb2ble_core::runtime::GenericBleGamepad16Report {
+        self.app.runtime().current_report()
+    }
+
+    /// Returns the last published output persona, if any.
+    pub fn last_persona(&self) -> Option<usb2ble_core::profile::OutputPersona> {
+        self.ble_output.last_persona()
+    }
+
+    /// Returns the last published persona-encoded wire report, if any.
+    pub fn last_wire(&self) -> Option<usb2ble_platform_espidf::ble_hid::EncodedBleInputReport> {
+        self.ble_output.last_wire()
+    }
 }
 
 /// Reusable boot and contract information for the embedded runtime.
@@ -5077,5 +5105,86 @@ mod tests {
 
         assert_eq!(runtime.ble_output.last_persona(), Some(persona));
         assert_eq!(runtime.ble_output.last_wire(), Some(encoded));
+    }
+
+    #[test]
+    fn embedded_runtime_state_queue_usb_event_exposes_event_to_step_persona() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let device_id = UsbDeviceId::new(10);
+
+        runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+
+        let outcome = runtime.step_persona(BleConnectionState::Idle);
+        assert_eq!(
+            outcome,
+            Ok(BufferedPersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(device_id))
+            ))
+        );
+    }
+
+    #[test]
+    fn embedded_runtime_state_push_console_bytes_allows_console_roundtrip() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        assert!(runtime.push_console_bytes(b"GET_INFO\n").is_ok());
+
+        let result = runtime.step_persona(BleConnectionState::Idle);
+        match result {
+            Ok(BufferedPersonaAppPumpOutcome::Console(BufferedConsoleOutcome::Responded(
+                Response::Info(_),
+            ))) => {}
+            _ => panic!("expected Info response, got {:?}", result),
+        }
+        assert!(!runtime.console_buffer.tx_bytes().is_empty());
+    }
+
+    #[test]
+    fn embedded_runtime_state_last_persona_and_last_wire_reflect_publish() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let device_id = UsbDeviceId::new(11);
+
+        runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+        let _ = runtime.step_persona(BleConnectionState::Connected);
+
+        runtime.queue_usb_event(UsbEvent::ReportDescriptorReceived {
+            device_id,
+            bytes: xy_descriptor_bytes(),
+            len: 18,
+        });
+        let _ = runtime.step_persona(BleConnectionState::Connected);
+
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        runtime.queue_usb_event(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let _ = runtime.step_persona(BleConnectionState::Connected);
+
+        let report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        let persona = OutputPersona::GenericBleGamepad16;
+        let encoded = encode_generic_ble_gamepad16_report(report);
+
+        assert_eq!(runtime.current_report(), report);
+        assert_eq!(runtime.last_persona(), Some(persona));
+        assert_eq!(runtime.last_wire(), Some(encoded));
     }
 }
