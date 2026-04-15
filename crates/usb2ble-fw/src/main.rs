@@ -257,11 +257,11 @@ fn run_host_demo() -> HostDemoResult {
         vendor_id: 1,
         product_id: 2,
     }));
-    let usb_attach_summary = match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8)
-    {
-        Ok(s) => s,
-        Err(e) => panic!("demo usb attach drain failed: {:?}", e),
-    };
+    let usb_attach_summary =
+        match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8) {
+            Ok(s) => s,
+            Err(e) => panic!("demo usb attach drain failed: {:?}", e),
+        };
     let usb_attach_outcome = match usb_attach_summary.last_non_idle_outcome {
         Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
