@@ -339,6 +339,51 @@ impl EmbeddedRuntimeState {
 
         EmbeddedStepSnapshot { outcome, runtime }
     }
+
+    /// Returns the currently active USB device, if any.
+    pub fn active_device(&self) -> Option<usb2ble_platform_espidf::usb_host::UsbDeviceId> {
+        self.app.active_device()
+    }
+
+    /// Returns the valid queued TX bytes from the console buffer.
+    pub fn console_tx_bytes(&self) -> &[u8] {
+        self.console_buffer.tx_bytes()
+    }
+
+    /// Repeatedly services the runtime until an idle state or step limit is reached.
+    pub fn drain_persona_until_idle(
+        &mut self,
+        ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+        max_steps: usize,
+    ) -> Result<EmbeddedDrainSummary, EmbeddedDrainError> {
+        let mut actions_processed = 0;
+
+        loop {
+            let snapshot = self.step_persona_snapshot(ble_state);
+
+            match snapshot.outcome {
+                Ok(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Idle)) => {
+                    return Ok(EmbeddedDrainSummary {
+                        actions_processed,
+                        final_snapshot: snapshot.runtime,
+                    });
+                }
+                Ok(_) => {
+                    actions_processed += 1;
+                }
+                Err(error) => {
+                    return Err(EmbeddedDrainError::Step(error));
+                }
+            }
+
+            if actions_processed >= max_steps {
+                return Err(EmbeddedDrainError::StepLimitReached {
+                    max_steps,
+                    last_snapshot: self.snapshot(),
+                });
+            }
+        }
+    }
 }
 
 /// A snapshot of the runtime state for observation and testing.
@@ -365,6 +410,29 @@ pub struct EmbeddedStepSnapshot {
     pub outcome: Result<BufferedPersonaAppPumpOutcome, BufferedPersonaAppPumpError>,
     /// The updated runtime state snapshot after the step.
     pub runtime: EmbeddedRuntimeSnapshot,
+}
+
+/// A summary of processing actions until an idle state was reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedDrainSummary {
+    /// The number of non-idle actions processed.
+    pub actions_processed: usize,
+    /// The final runtime state snapshot.
+    pub final_snapshot: EmbeddedRuntimeSnapshot,
+}
+
+/// Errors that can occur while draining the embedded runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddedDrainError {
+    /// A single step failed.
+    Step(BufferedPersonaAppPumpError),
+    /// The maximum number of allowed steps was reached before idle.
+    StepLimitReached {
+        /// The step limit that was reached.
+        max_steps: usize,
+        /// The last observed runtime state snapshot.
+        last_snapshot: EmbeddedRuntimeSnapshot,
+    },
 }
 
 /// Reusable boot and contract information for the embedded runtime.
@@ -931,7 +999,7 @@ mod tests {
     };
     use usb2ble_proto::framing::FrameError;
 
-    use super::EmbeddedRuntimeState;
+    use super::{EmbeddedDrainError, EmbeddedRuntimeState};
     use usb2ble_proto::messages::{BleLinkState, Command, Response};
 
     fn button_index(index: u8) -> ButtonIndex {
@@ -5318,5 +5386,111 @@ mod tests {
         assert_eq!(snapshot.runtime.current_encoded_report, encoded);
         assert_eq!(snapshot.runtime.last_persona, Some(persona));
         assert_eq!(snapshot.runtime.last_wire, Some(encoded));
+    }
+
+    #[test]
+    fn embedded_runtime_state_drain_persona_until_idle_returns_zero_actions_for_idle_runtime() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let result = runtime.drain_persona_until_idle(BleConnectionState::Idle, 4);
+
+        let summary = match result {
+            Ok(summary) => summary,
+            Err(error) => panic!("drain failed: {:?}", error),
+        };
+
+        assert_eq!(summary.actions_processed, 0);
+        assert_eq!(summary.final_snapshot, runtime.snapshot());
+        assert_eq!(
+            summary.final_snapshot.current_report,
+            GenericBleGamepad16Report::default()
+        );
+    }
+
+    #[test]
+    fn embedded_runtime_state_drain_persona_until_idle_processes_console_then_stops() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        assert!(runtime.push_console_bytes(b"GET_INFO\n").is_ok());
+
+        let summary = match runtime.drain_persona_until_idle(BleConnectionState::Idle, 4) {
+            Ok(summary) => summary,
+            Err(error) => panic!("drain failed: {:?}", error),
+        };
+
+        assert_eq!(summary.actions_processed, 1);
+        assert!(!runtime.console_tx_bytes().is_empty());
+        assert!(summary.final_snapshot.last_persona.is_none());
+    }
+
+    #[test]
+    fn embedded_runtime_state_drain_persona_until_idle_processes_usb_attach_descriptor_input() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let device_id = UsbDeviceId::new(13);
+
+        runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+        let _ = runtime.drain_persona_until_idle(BleConnectionState::Connected, 8);
+
+        runtime.queue_usb_event(UsbEvent::ReportDescriptorReceived {
+            device_id,
+            bytes: xy_descriptor_bytes(),
+            len: 18,
+        });
+        let _ = runtime.drain_persona_until_idle(BleConnectionState::Connected, 8);
+
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        runtime.queue_usb_event(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let summary = match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8) {
+            Ok(summary) => summary,
+            Err(error) => panic!("drain failed: {:?}", error),
+        };
+
+        assert_eq!(summary.actions_processed, 1);
+        let report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        assert_eq!(summary.final_snapshot.current_report, report);
+        assert_eq!(
+            summary.final_snapshot.output_persona,
+            OutputPersona::GenericBleGamepad16
+        );
+        assert_eq!(
+            summary.final_snapshot.current_encoded_report,
+            encode_generic_ble_gamepad16_report(report)
+        );
+        assert_eq!(
+            summary.final_snapshot.last_persona,
+            Some(OutputPersona::GenericBleGamepad16)
+        );
+        assert!(summary.final_snapshot.last_wire.is_some());
+    }
+
+    #[test]
+    fn embedded_runtime_state_drain_persona_until_idle_returns_step_limit_reached() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        assert!(runtime.push_console_bytes(b"GET_INFO\n").is_ok());
+
+        let result = runtime.drain_persona_until_idle(BleConnectionState::Idle, 0);
+
+        match result {
+            Err(EmbeddedDrainError::StepLimitReached { max_steps, .. }) => {
+                assert_eq!(max_steps, 0);
+            }
+            other => panic!("expected StepLimitReached, got {:?}", other),
+        }
     }
 }

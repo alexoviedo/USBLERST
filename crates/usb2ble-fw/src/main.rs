@@ -171,7 +171,6 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
             }
             ReplayCommand::Descriptor(bytes) => {
                 let device_id = runtime
-                    .app
                     .active_device()
                     .ok_or("no active device for DESCRIPTOR")?;
                 let mut fixed_bytes = [0_u8; 64];
@@ -185,7 +184,6 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
             }
             ReplayCommand::Input { report_id, data } => {
                 let device_id = runtime
-                    .app
                     .active_device()
                     .ok_or("no active device for INPUT")?;
                 let mut fixed_bytes = [0_u8; 64];
@@ -244,7 +242,7 @@ fn run_host_demo() -> HostDemoResult {
         Ok(app::BufferedPersonaAppPumpOutcome::Console(outcome)) => outcome,
         other => panic!("expected console outcome, got {:?}", other),
     };
-    let console_tx = runtime.console_buffer.tx_bytes().to_vec();
+    let console_tx = runtime.console_tx_bytes().to_vec();
 
     let device_id = UsbDeviceId::new(101);
 
