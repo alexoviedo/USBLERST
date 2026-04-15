@@ -225,6 +225,84 @@ pub enum BootstrapError {
     UnavailableProfileStore,
 }
 
+/// Embedded-facing runtime state for deterministic host testing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedRuntimeState {
+    /// The core application coordinator.
+    pub app: App,
+    /// The in-memory profile store.
+    pub profile_store: usb2ble_platform_espidf::nvs_store::MemoryProfileStore,
+    /// The in-memory bond store.
+    pub bond_store: usb2ble_platform_espidf::nvs_store::MemoryBondStore,
+    /// The framed console buffer.
+    pub console_buffer: usb2ble_platform_espidf::console_uart::FramedConsoleBuffer,
+    /// The queued USB ingress source.
+    pub usb_ingress: usb2ble_platform_espidf::usb_host::QueuedUsbIngress,
+    /// The persona-wire recording BLE output sink.
+    pub ble_output: usb2ble_platform_espidf::ble_hid::PersonaWireRecordingBleOutput,
+}
+
+impl EmbeddedRuntimeState {
+    /// Bootstraps a new embedded-facing runtime state for host testing.
+    pub fn new_for_host() -> Self {
+        let profile_store = usb2ble_platform_espidf::nvs_store::MemoryProfileStore::new();
+        let app = App::bootstrap(&profile_store);
+        let bond_store = usb2ble_platform_espidf::nvs_store::MemoryBondStore::new();
+        let console_buffer = usb2ble_platform_espidf::console_uart::FramedConsoleBuffer::new();
+        let usb_ingress = usb2ble_platform_espidf::usb_host::QueuedUsbIngress::new();
+        let ble_output = usb2ble_platform_espidf::ble_hid::PersonaWireRecordingBleOutput::new(
+            usb2ble_platform_espidf::ble_hid::BleConnectionState::Idle,
+        );
+
+        Self {
+            app,
+            profile_store,
+            bond_store,
+            console_buffer,
+            usb_ingress,
+            ble_output,
+        }
+    }
+
+    /// Returns a snapshot of the current boot and contract information.
+    pub fn boot_info(&self) -> EmbeddedBootInfo {
+        EmbeddedBootInfo {
+            active_profile: self.app.runtime().active_profile(),
+            output_persona: self.app.current_output_persona(),
+            ble_descriptor: self.app.current_ble_persona_descriptor(),
+            initial_encoded_report: self.app.current_encoded_ble_input_report(),
+        }
+    }
+
+    /// Services at most one embedded action using the persona-oriented pump.
+    pub fn step_persona(
+        &mut self,
+        ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+    ) -> Result<BufferedPersonaAppPumpOutcome, BufferedPersonaAppPumpError> {
+        self.app.service_once_with_console_buffer_persona(
+            &mut self.console_buffer,
+            &mut self.profile_store,
+            &mut self.bond_store,
+            ble_state,
+            &mut self.usb_ingress,
+            &mut self.ble_output,
+        )
+    }
+}
+
+/// Reusable boot and contract information for the embedded runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedBootInfo {
+    /// The active profile ID at boot.
+    pub active_profile: usb2ble_core::profile::ProfileId,
+    /// The implied output persona at boot.
+    pub output_persona: usb2ble_core::profile::OutputPersona,
+    /// The BLE persona descriptor for the active persona.
+    pub ble_descriptor: usb2ble_platform_espidf::ble_hid::BlePersonaDescriptor,
+    /// The initial encoded BLE report for the active persona.
+    pub initial_encoded_report: usb2ble_platform_espidf::ble_hid::EncodedBleInputReport,
+}
+
 /// Bootstraps the application with the default host-side profile store.
 #[cfg(not(target_os = "espidf"))]
 pub fn bootstrap_default() -> Result<App, BootstrapError> {
@@ -775,6 +853,8 @@ mod tests {
         DeviceMeta, QueuedUsbIngress, UsbDeviceId, UsbEvent, UsbIngress,
     };
     use usb2ble_proto::framing::FrameError;
+
+    use super::EmbeddedRuntimeState;
     use usb2ble_proto::messages::{BleLinkState, Command, Response};
 
     fn button_index(index: u8) -> ButtonIndex {
@@ -4887,5 +4967,115 @@ mod tests {
         assert_eq!(usb_ingress.poll_calls(), 0);
         assert_eq!(ble_output.last_persona(), None);
         assert_eq!(ble_output.last_wire(), None);
+    }
+
+    #[test]
+    fn embedded_runtime_state_new_for_host_bootstraps_v1_profile() {
+        let runtime = EmbeddedRuntimeState::new_for_host();
+        assert_eq!(runtime.app.runtime().active_profile(), V1_PROFILE_ID);
+    }
+
+    #[test]
+    fn embedded_runtime_state_boot_info_matches_app_contract() {
+        let runtime = EmbeddedRuntimeState::new_for_host();
+        let info = runtime.boot_info();
+
+        assert_eq!(info.active_profile, V1_PROFILE_ID);
+        assert_eq!(info.output_persona, OutputPersona::GenericBleGamepad16);
+        assert_eq!(
+            info.ble_descriptor,
+            usb2ble_platform_espidf::ble_hid::output_persona_descriptor(
+                OutputPersona::GenericBleGamepad16
+            )
+        );
+        assert_eq!(
+            info.initial_encoded_report,
+            usb2ble_platform_espidf::ble_hid::encode_generic_ble_gamepad16_report(
+                GenericBleGamepad16Report::default()
+            )
+        );
+    }
+
+    #[test]
+    fn embedded_runtime_state_step_persona_services_console_roundtrip() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        assert!(runtime.console_buffer.push_rx_bytes(b"GET_INFO\n").is_ok());
+
+        let result = runtime.step_persona(BleConnectionState::Idle);
+
+        match result {
+            Ok(BufferedPersonaAppPumpOutcome::Console(BufferedConsoleOutcome::Responded(
+                Response::Info(_),
+            ))) => {}
+            _ => panic!("expected Info response, got {:?}", result),
+        }
+
+        assert!(!runtime.console_buffer.tx_bytes().is_empty());
+        assert!(runtime.ble_output.last_persona().is_none());
+    }
+
+    #[test]
+    fn embedded_runtime_state_step_persona_services_usb_input_to_persona_wire() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let device_id = UsbDeviceId::new(1);
+
+        // Queue attach
+        runtime
+            .usb_ingress
+            .queue_event(UsbEvent::DeviceAttached(DeviceMeta {
+                device_id,
+                vendor_id: 1,
+                product_id: 2,
+            }));
+        assert!(runtime.step_persona(BleConnectionState::Connected).is_ok());
+
+        // Queue descriptor
+        runtime
+            .usb_ingress
+            .queue_event(UsbEvent::ReportDescriptorReceived {
+                device_id,
+                bytes: xy_descriptor_bytes(),
+                len: 18,
+            });
+        assert!(runtime.step_persona(BleConnectionState::Connected).is_ok());
+
+        // Queue input [0x05, 0xF6]
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        runtime
+            .usb_ingress
+            .queue_event(UsbEvent::InputReportReceived {
+                device_id,
+                report_id: 0,
+                bytes: payload,
+                len: 2,
+            });
+
+        let result = runtime.step_persona(BleConnectionState::Connected);
+
+        let report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        let persona = OutputPersona::GenericBleGamepad16;
+        let encoded = encode_generic_ble_gamepad16_report(report);
+
+        assert_eq!(
+            result,
+            Ok(BufferedPersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Published {
+                    report,
+                    persona,
+                    encoded
+                }
+            ))
+        );
+
+        assert_eq!(runtime.ble_output.last_persona(), Some(persona));
+        assert_eq!(runtime.ble_output.last_wire(), Some(encoded));
     }
 }

@@ -2,7 +2,7 @@
 
 mod app;
 
-pub use app::App;
+pub use app::{App, EmbeddedRuntimeState};
 
 #[derive(Debug, Clone)]
 struct HostDemoResult {
@@ -348,6 +348,31 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
+    if args.iter().any(|arg| arg == "--embedded-contract") {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let runtime = EmbeddedRuntimeState::new_for_host();
+            let info = runtime.boot_info();
+
+            println!("== usb2ble embedded contract ==");
+            println!("profile");
+            println!("  {}", info.active_profile.as_str());
+            println!("persona");
+            println!("  {}", info.output_persona.as_str());
+            println!("descriptor");
+            println!("  name: {}", info.ble_descriptor.name);
+            println!("  report id: 0x{:02X}", info.ble_descriptor.report_id);
+            println!("  wire length: {}", info.ble_descriptor.wire_len);
+            println!("initial encoded");
+            println!("  {}", hex_format(info.initial_encoded_report.as_bytes()));
+        }
+        #[cfg(target_os = "espidf")]
+        {
+            println!("embedded contract view is not available on this target yet");
+        }
+        return;
+    }
+
     if let Some(pos) = args.iter().position(|arg| arg == "--replay-host") {
         #[cfg(not(target_os = "espidf"))]
         {
@@ -493,6 +518,35 @@ mod host_demo_tests {
     fn hex_format_returns_expected_string_for_fixed_bytes() {
         let bytes = [0x01, 0x05, 0x00, 0xF6, 0xFF, 0x00, 0x00, 0x08, 0x00, 0x00];
         assert_eq!(hex_format(&bytes), "01 05 00 F6 FF 00 00 08 00 00");
+    }
+
+    #[test]
+    fn hex_format_handles_empty_slice() {
+        assert_eq!(hex_format(&[]), "");
+    }
+
+    #[test]
+    fn hex_format_pads_single_digit_hex() {
+        let bytes = [0x0A, 0x01, 0x0F];
+        assert_eq!(hex_format(&bytes), "0A 01 0F");
+    }
+
+    #[test]
+    fn embedded_contract_view_data_matches_expected_boot_info() {
+        let runtime = EmbeddedRuntimeState::new_for_host();
+        let info = runtime.boot_info();
+
+        assert_eq!(info.active_profile.as_str(), "t16000m_v1");
+        assert_eq!(info.output_persona.as_str(), "generic_ble_gamepad_16");
+        assert_eq!(info.ble_descriptor.name, "generic_ble_gamepad_16");
+        assert_eq!(info.ble_descriptor.report_id, 0x01);
+        assert_eq!(info.ble_descriptor.wire_len, 10);
+
+        let expected_hex = "01 00 00 00 00 00 00 08 00 00";
+        assert_eq!(
+            hex_format(info.initial_encoded_report.as_bytes()),
+            expected_hex
+        );
     }
 
     #[test]
