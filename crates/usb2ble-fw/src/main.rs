@@ -632,6 +632,75 @@ mod host_demo_tests {
 
     #[cfg(not(target_os = "espidf"))]
     #[test]
+    fn replay_fixture_xy_input_produces_expected_report_and_wire() {
+        let script = include_str!("../../../fixtures/replay/xy_input.txt");
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        let res = match run_replay_host(cmds) {
+            Ok(r) => r,
+            Err(e) => panic!("run failed: {}", e),
+        };
+
+        let expected_report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+
+        assert_eq!(res.final_persona, OutputPersona::GenericBleGamepad16);
+        assert_eq!(res.final_report, expected_report);
+        assert_eq!(
+            res.final_encoded.as_bytes(),
+            encode_generic_ble_gamepad16_report(expected_report).as_bytes()
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn replay_fixture_xy_input_detach_resets_to_default_report() {
+        let script = include_str!("../../../fixtures/replay/xy_input_detach.txt");
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        let res = match run_replay_host(cmds) {
+            Ok(r) => r,
+            Err(e) => panic!("run failed: {}", e),
+        };
+
+        assert_eq!(res.final_report, GenericBleGamepad16Report::default());
+        assert_eq!(
+            res.final_encoded.as_bytes(),
+            encode_generic_ble_gamepad16_report(GenericBleGamepad16Report::default()).as_bytes()
+        );
+    }
+
+    #[test]
+    fn replay_fixture_xy_input_has_expected_command_count() {
+        let script = include_str!("../../../fixtures/replay/xy_input.txt");
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        assert_eq!(cmds.len(), 3);
+    }
+
+    #[test]
+    fn replay_fixture_xy_input_detach_has_expected_command_count() {
+        let script = include_str!("../../../fixtures/replay/xy_input_detach.txt");
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        assert_eq!(cmds.len(), 4);
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
     fn run_host_demo_produces_expected_gamepad_report() {
         let res = run_host_demo();
 

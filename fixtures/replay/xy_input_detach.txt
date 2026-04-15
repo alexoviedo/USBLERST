@@ -1,0 +1,13 @@
+# deterministic script that attaches a device, provides a descriptor, sends an input report, and detaches the device
+
+# attaches device 101
+ATTACH 101 1 2
+
+# known-good two-field X/Y descriptor
+DESCRIPTOR 05 01 15 81 25 7F 75 08 95 01 09 30 81 02 09 31 81 02
+
+# sends input report 00 05 F6
+INPUT 00 05 F6
+
+# detaches device 101
+DETACH 101
