@@ -4779,11 +4779,13 @@ mod tests {
                 &mut usb_ingress,
                 &mut ble_output,
             ),
-            Ok(PersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Published {
-                report: expected_report,
-                persona: expected_persona,
-                encoded: expected_encoded,
-            }))
+            Ok(PersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Published {
+                    report: expected_report,
+                    persona: expected_persona,
+                    encoded: expected_encoded,
+                }
+            ))
         );
 
         assert_eq!(ble_output.last_persona(), Some(expected_persona));
@@ -4792,7 +4794,8 @@ mod tests {
     }
 
     #[test]
-    fn service_once_with_console_buffer_persona_with_platform_adapters_prioritizes_console_then_usb() {
+    fn service_once_with_console_buffer_persona_with_platform_adapters_prioritizes_console_then_usb(
+    ) {
         let mut app = App::new(V1_PROFILE_ID);
         let mut buffer = FramedConsoleBuffer::new();
         let mut profile_store = MemoryProfileStore::new();
@@ -4842,9 +4845,11 @@ mod tests {
                 &mut usb_ingress,
                 &mut ble_output,
             ),
-            Ok(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(UsbDeviceId::new(92))
-            )))
+            Ok(BufferedPersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(
+                    UsbDeviceId::new(92)
+                ))
+            ))
         );
 
         assert_eq!(app.active_device(), Some(UsbDeviceId::new(92)));
