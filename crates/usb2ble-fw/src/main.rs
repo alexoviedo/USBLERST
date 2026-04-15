@@ -201,16 +201,19 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
             }
         }
 
-        let snapshot = runtime.step_persona_snapshot(BleConnectionState::Connected);
-        match snapshot.outcome {
-            Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcomes.push(outcome),
-            Ok(app::BufferedPersonaAppPumpOutcome::Idle) => {
-                outcomes.push(app::UsbPersonaPumpOutcome::Idle)
-            }
-            Ok(app::BufferedPersonaAppPumpOutcome::Console(_)) => {
+        let summary = runtime
+            .drain_persona_until_idle(BleConnectionState::Connected, 8)
+            .map_err(|e| format!("drain failed: {:?}", e))?;
+
+        match summary.last_non_idle_outcome {
+            Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcomes.push(outcome),
+            None => outcomes.push(app::UsbPersonaPumpOutcome::Idle),
+            Some(app::BufferedPersonaAppPumpOutcome::Console(_)) => {
                 return Err("unexpected console outcome in replay".to_string())
             }
-            Err(e) => return Err(format!("usb pump failed: {:?}", e)),
+            Some(app::BufferedPersonaAppPumpOutcome::Idle) => {
+                outcomes.push(app::UsbPersonaPumpOutcome::Idle)
+            }
         }
     }
 
@@ -237,9 +240,12 @@ fn run_host_demo() -> HostDemoResult {
         panic!("demo console push failed: {:?}", e);
     }
 
-    let console_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
-    let console_outcome = match console_snap.outcome {
-        Ok(app::BufferedPersonaAppPumpOutcome::Console(outcome)) => outcome,
+    let console_summary = match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8) {
+        Ok(s) => s,
+        Err(e) => panic!("demo console drain failed: {:?}", e),
+    };
+    let console_outcome = match console_summary.last_non_idle_outcome {
+        Some(app::BufferedPersonaAppPumpOutcome::Console(outcome)) => outcome,
         other => panic!("expected console outcome, got {:?}", other),
     };
     let console_tx = runtime.console_tx_bytes().to_vec();
@@ -251,9 +257,13 @@ fn run_host_demo() -> HostDemoResult {
         vendor_id: 1,
         product_id: 2,
     }));
-    let usb_attach_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
-    let usb_attach_outcome = match usb_attach_snap.outcome {
-        Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
+    let usb_attach_summary = match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8)
+    {
+        Ok(s) => s,
+        Err(e) => panic!("demo usb attach drain failed: {:?}", e),
+    };
+    let usb_attach_outcome = match usb_attach_summary.last_non_idle_outcome {
+        Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
 
@@ -267,9 +277,13 @@ fn run_host_demo() -> HostDemoResult {
         bytes: descriptor_bytes,
         len: 18,
     });
-    let usb_descriptor_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
-    let usb_descriptor_outcome = match usb_descriptor_snap.outcome {
-        Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
+    let usb_descriptor_summary =
+        match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8) {
+            Ok(s) => s,
+            Err(e) => panic!("demo usb descriptor drain failed: {:?}", e),
+        };
+    let usb_descriptor_outcome = match usb_descriptor_summary.last_non_idle_outcome {
+        Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
 
@@ -282,13 +296,17 @@ fn run_host_demo() -> HostDemoResult {
         bytes: report_payload,
         len: 2,
     });
-    let usb_input_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
-    let usb_input_outcome = match usb_input_snap.outcome {
-        Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
+    let usb_input_summary = match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8)
+    {
+        Ok(s) => s,
+        Err(e) => panic!("demo usb input drain failed: {:?}", e),
+    };
+    let usb_input_outcome = match usb_input_summary.last_non_idle_outcome {
+        Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
 
-    let final_snapshot = usb_input_snap.runtime;
+    let final_snapshot = usb_input_summary.final_snapshot;
 
     HostDemoResult {
         boot_profile: boot_info.active_profile,

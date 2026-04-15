@@ -357,19 +357,23 @@ impl EmbeddedRuntimeState {
         max_steps: usize,
     ) -> Result<EmbeddedDrainSummary, EmbeddedDrainError> {
         let mut actions_processed = 0;
+        let mut last_non_idle_outcome = None;
 
         loop {
             let snapshot = self.step_persona_snapshot(ble_state);
 
             match snapshot.outcome {
-                Ok(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Idle)) => {
+                Ok(BufferedPersonaAppPumpOutcome::Idle)
+                | Ok(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Idle)) => {
                     return Ok(EmbeddedDrainSummary {
                         actions_processed,
+                        last_non_idle_outcome,
                         final_snapshot: snapshot.runtime,
                     });
                 }
-                Ok(_) => {
+                Ok(outcome) => {
                     actions_processed += 1;
+                    last_non_idle_outcome = Some(outcome);
                 }
                 Err(error) => {
                     return Err(EmbeddedDrainError::Step(error));
@@ -417,6 +421,8 @@ pub struct EmbeddedStepSnapshot {
 pub struct EmbeddedDrainSummary {
     /// The number of non-idle actions processed.
     pub actions_processed: usize,
+    /// The last non-idle successful outcome processed.
+    pub last_non_idle_outcome: Option<BufferedPersonaAppPumpOutcome>,
     /// The final runtime state snapshot.
     pub final_snapshot: EmbeddedRuntimeSnapshot,
 }
@@ -5417,6 +5423,17 @@ mod tests {
         };
 
         assert_eq!(summary.actions_processed, 1);
+        match summary.last_non_idle_outcome {
+            Some(BufferedPersonaAppPumpOutcome::Console(BufferedConsoleOutcome::Responded(
+                Response::Info(_),
+            ))) => {}
+            _ => {
+                panic!(
+                    "expected Info outcome, got {:?}",
+                    summary.last_non_idle_outcome
+                )
+            }
+        }
         assert!(!runtime.console_tx_bytes().is_empty());
         assert!(summary.final_snapshot.last_persona.is_none());
     }
@@ -5463,20 +5480,65 @@ mod tests {
             hat: HatPosition::Centered,
             buttons: 0,
         };
+        let persona = OutputPersona::GenericBleGamepad16;
+        let encoded = encode_generic_ble_gamepad16_report(report);
+
+        match summary.last_non_idle_outcome {
+            Some(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Published {
+                report: r,
+                persona: p,
+                encoded: e,
+            })) => {
+                assert_eq!(r, report);
+                assert_eq!(p, persona);
+                assert_eq!(e, encoded);
+            }
+            _ => panic!(
+                "expected Published outcome, got {:?}",
+                summary.last_non_idle_outcome
+            ),
+        }
+
         assert_eq!(summary.final_snapshot.current_report, report);
-        assert_eq!(
-            summary.final_snapshot.output_persona,
-            OutputPersona::GenericBleGamepad16
-        );
-        assert_eq!(
-            summary.final_snapshot.current_encoded_report,
-            encode_generic_ble_gamepad16_report(report)
-        );
-        assert_eq!(
-            summary.final_snapshot.last_persona,
-            Some(OutputPersona::GenericBleGamepad16)
-        );
+        assert_eq!(summary.final_snapshot.output_persona, persona);
+        assert_eq!(summary.final_snapshot.current_encoded_report, encoded);
+        assert_eq!(summary.final_snapshot.last_persona, Some(persona));
         assert!(summary.final_snapshot.last_wire.is_some());
+    }
+
+    #[test]
+    fn embedded_runtime_state_drain_persona_until_idle_processes_multiple_actions_in_one_drain() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let device_id = UsbDeviceId::new(14);
+
+        // Queue console command AND USB event
+        assert!(runtime.push_console_bytes(b"GET_INFO\n").is_ok());
+        runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+
+        let summary = match runtime.drain_persona_until_idle(BleConnectionState::Connected, 8) {
+            Ok(summary) => summary,
+            Err(error) => panic!("drain failed: {:?}", error),
+        };
+
+        // Console has priority, so it processes both: Console then USB Attach
+        assert_eq!(summary.actions_processed, 2);
+        match summary.last_non_idle_outcome {
+            Some(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
+                UsbServiceOutcome::DeviceAttached(id),
+            ))) => {
+                assert_eq!(id, device_id);
+            }
+            _ => panic!(
+                "expected USB Attach outcome, got {:?}",
+                summary.last_non_idle_outcome
+            ),
+        }
+        assert_eq!(runtime.active_device(), Some(device_id));
+        assert!(!runtime.console_tx_bytes().is_empty());
     }
 
     #[test]
