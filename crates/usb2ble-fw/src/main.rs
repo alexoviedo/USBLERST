@@ -30,6 +30,199 @@ fn hex_format(bytes: &[u8]) -> String {
         .join(" ")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplayCommand {
+    Attach {
+        device_id: u8,
+        vendor_id: u16,
+        product_id: u16,
+    },
+    Descriptor(Vec<u8>),
+    Input {
+        report_id: u8,
+        data: Vec<u8>,
+    },
+    Detach(u8),
+}
+
+#[derive(Debug, Clone)]
+struct ReplayResult {
+    command_count: usize,
+    outcomes: Vec<app::UsbPersonaPumpOutcome>,
+    final_persona: usb2ble_core::profile::OutputPersona,
+    final_report: usb2ble_core::runtime::GenericBleGamepad16Report,
+    final_encoded: usb2ble_platform_espidf::ble_hid::EncodedBleInputReport,
+}
+
+fn parse_hex_bytes(parts: &[&str]) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    for part in parts {
+        if part.len() != 2 {
+            return Err(format!("invalid hex byte: {}", part));
+        }
+        let byte = u8::from_str_radix(part, 16)
+            .map_err(|e| format!("invalid hex byte {}: {}", part, e))?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
+fn parse_replay_script(script: &str) -> Result<Vec<ReplayCommand>, String> {
+    let mut commands = Vec::new();
+    for (line_num, line) in script.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        match parts[0] {
+            "ATTACH" => {
+                if parts.len() != 4 {
+                    return Err(format!(
+                        "line {}: ATTACH requires 3 arguments",
+                        line_num + 1
+                    ));
+                }
+                let device_id = parts[1]
+                    .parse()
+                    .map_err(|e| format!("line {}: invalid device_id: {}", line_num + 1, e))?;
+                let vendor_id = parts[2]
+                    .parse()
+                    .map_err(|e| format!("line {}: invalid vendor_id: {}", line_num + 1, e))?;
+                let product_id = parts[3]
+                    .parse()
+                    .map_err(|e| format!("line {}: invalid product_id: {}", line_num + 1, e))?;
+                commands.push(ReplayCommand::Attach {
+                    device_id,
+                    vendor_id,
+                    product_id,
+                });
+            }
+            "DESCRIPTOR" => {
+                let bytes = parse_hex_bytes(&parts[1..])
+                    .map_err(|e| format!("line {}: {}", line_num + 1, e))?;
+                if bytes.len() > 64 {
+                    return Err(format!(
+                        "line {}: descriptor too long (max 64)",
+                        line_num + 1
+                    ));
+                }
+                commands.push(ReplayCommand::Descriptor(bytes));
+            }
+            "INPUT" => {
+                if parts.len() < 2 {
+                    return Err(format!(
+                        "line {}: INPUT requires report_id and optional data",
+                        line_num + 1
+                    ));
+                }
+                let report_id = u8::from_str_radix(parts[1], 16)
+                    .map_err(|e| format!("line {}: invalid report_id: {}", line_num + 1, e))?;
+                let data = parse_hex_bytes(&parts[2..])
+                    .map_err(|e| format!("line {}: {}", line_num + 1, e))?;
+                if data.len() > 64 {
+                    return Err(format!(
+                        "line {}: input data too long (max 64)",
+                        line_num + 1
+                    ));
+                }
+                commands.push(ReplayCommand::Input { report_id, data });
+            }
+            "DETACH" => {
+                if parts.len() != 2 {
+                    return Err(format!("line {}: DETACH requires 1 argument", line_num + 1));
+                }
+                let device_id = parts[1]
+                    .parse()
+                    .map_err(|e| format!("line {}: invalid device_id: {}", line_num + 1, e))?;
+                commands.push(ReplayCommand::Detach(device_id));
+            }
+            other => return Err(format!("line {}: unknown command {}", line_num + 1, other)),
+        }
+    }
+    Ok(commands)
+}
+
+#[cfg(not(target_os = "espidf"))]
+fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String> {
+    use usb2ble_platform_espidf::ble_hid::{BleConnectionState, PersonaWireRecordingBleOutput};
+    use usb2ble_platform_espidf::nvs_store::{MemoryBondStore, MemoryProfileStore};
+    use usb2ble_platform_espidf::usb_host::{DeviceMeta, QueuedUsbIngress, UsbDeviceId, UsbEvent};
+
+    let profile_store = MemoryProfileStore::new();
+    let _bond_store = MemoryBondStore::new();
+    let mut app_instance = App::bootstrap(&profile_store);
+
+    let mut usb_ingress = QueuedUsbIngress::new();
+    let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+    let mut outcomes = Vec::new();
+
+    for cmd in &commands {
+        match cmd {
+            ReplayCommand::Attach {
+                device_id,
+                vendor_id,
+                product_id,
+            } => {
+                usb_ingress.queue_event(UsbEvent::DeviceAttached(DeviceMeta {
+                    device_id: UsbDeviceId::new(*device_id),
+                    vendor_id: *vendor_id,
+                    product_id: *product_id,
+                }));
+            }
+            ReplayCommand::Descriptor(bytes) => {
+                let device_id = app_instance
+                    .active_device()
+                    .ok_or("no active device for DESCRIPTOR")?;
+                let mut fixed_bytes = [0_u8; 64];
+                let len = bytes.len();
+                fixed_bytes[..len].copy_from_slice(bytes);
+                usb_ingress.queue_event(UsbEvent::ReportDescriptorReceived {
+                    device_id,
+                    bytes: fixed_bytes,
+                    len,
+                });
+            }
+            ReplayCommand::Input { report_id, data } => {
+                let device_id = app_instance
+                    .active_device()
+                    .ok_or("no active device for INPUT")?;
+                let mut fixed_bytes = [0_u8; 64];
+                let len = data.len();
+                fixed_bytes[..len].copy_from_slice(data);
+                usb_ingress.queue_event(UsbEvent::InputReportReceived {
+                    device_id,
+                    report_id: *report_id,
+                    bytes: fixed_bytes,
+                    len,
+                });
+            }
+            ReplayCommand::Detach(device_id) => {
+                usb_ingress.queue_event(UsbEvent::DeviceDetached(UsbDeviceId::new(*device_id)));
+            }
+        }
+
+        match app_instance.service_usb_once_persona(&mut usb_ingress, &mut ble_output) {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(e) => return Err(format!("usb pump failed: {:?}", e)),
+        }
+    }
+
+    Ok(ReplayResult {
+        command_count: commands.len(),
+        outcomes,
+        final_persona: app_instance.current_output_persona(),
+        final_report: app_instance.runtime().current_report(),
+        final_encoded: app_instance.current_encoded_ble_input_report(),
+    })
+}
+
 #[cfg(not(target_os = "espidf"))]
 fn run_host_demo() -> HostDemoResult {
     use usb2ble_platform_espidf::ble_hid::{BleConnectionState, PersonaWireRecordingBleOutput};
@@ -154,6 +347,66 @@ fn main() {
     usb2ble_platform_espidf::link_patches_if_needed();
 
     let args: Vec<String> = std::env::args().collect();
+
+    if let Some(pos) = args.iter().position(|arg| arg == "--replay-host") {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            if pos + 1 >= args.len() {
+                println!("error: --replay-host requires a path");
+                return;
+            }
+            let path = &args[pos + 1];
+            let script = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("error reading script file: {}", e);
+                    return;
+                }
+            };
+
+            let commands = match parse_replay_script(&script) {
+                Ok(cmds) => cmds,
+                Err(e) => {
+                    println!("error parsing script: {}", e);
+                    return;
+                }
+            };
+
+            let res = match run_replay_host(commands) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("error running replay: {}", e);
+                    return;
+                }
+            };
+
+            println!("== usb2ble host replay ==");
+            println!("commands");
+            println!("  parsed: {}", res.command_count);
+
+            println!("events");
+            for outcome in &res.outcomes {
+                println!("  outcome: {:?}", outcome);
+            }
+
+            println!("final report");
+            println!("  persona: {}", res.final_persona.as_str());
+            println!("  x: {}", res.final_report.x);
+            println!("  y: {}", res.final_report.y);
+            println!("  rz: {}", res.final_report.rz);
+            println!("  hat: {:?}", res.final_report.hat);
+            println!("  buttons: 0x{:04X}", res.final_report.buttons);
+
+            println!("final encoded");
+            println!("  wire: {}", hex_format(res.final_encoded.as_bytes()));
+        }
+        #[cfg(target_os = "espidf")]
+        {
+            println!("host replay is only available on non-espidf targets");
+        }
+        return;
+    }
+
     if args.iter().any(|arg| arg == "--demo-host") {
         #[cfg(not(target_os = "espidf"))]
         {
@@ -240,6 +493,141 @@ mod host_demo_tests {
     fn hex_format_returns_expected_string_for_fixed_bytes() {
         let bytes = [0x01, 0x05, 0x00, 0xF6, 0xFF, 0x00, 0x00, 0x08, 0x00, 0x00];
         assert_eq!(hex_format(&bytes), "01 05 00 F6 FF 00 00 08 00 00");
+    }
+
+    #[test]
+    fn parse_replay_script_ignores_comments_and_blank_lines() {
+        let script = r#"
+            # comment
+            ATTACH 101 1 2
+
+            # another comment
+        "#;
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(
+            cmds[0],
+            ReplayCommand::Attach {
+                device_id: 101,
+                vendor_id: 1,
+                product_id: 2
+            }
+        );
+    }
+
+    #[test]
+    fn parse_replay_script_parses_attach_descriptor_and_input() {
+        let script = r#"
+            ATTACH 101 1 2
+            DESCRIPTOR 05 01 15 81 25 7F 75 08 95 01 09 30 81 02 09 31 81 02
+            INPUT 00 05 F6
+        "#;
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        assert_eq!(cmds.len(), 3);
+        assert_eq!(
+            cmds[0],
+            ReplayCommand::Attach {
+                device_id: 101,
+                vendor_id: 1,
+                product_id: 2
+            }
+        );
+        match &cmds[1] {
+            ReplayCommand::Descriptor(bytes) => {
+                assert_eq!(bytes.len(), 18);
+                assert_eq!(bytes[0], 0x05);
+            }
+            _ => panic!("expected Descriptor"),
+        }
+        assert_eq!(
+            cmds[2],
+            ReplayCommand::Input {
+                report_id: 0,
+                data: vec![0x05, 0xF6]
+            }
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn run_replay_script_produces_expected_final_report_and_wire_bytes() {
+        let script = r#"
+            ATTACH 101 1 2
+            DESCRIPTOR 05 01 15 81 25 7F 75 08 95 01 09 30 81 02 09 31 81 02
+            INPUT 00 05 F6
+        "#;
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        let res = match run_replay_host(cmds) {
+            Ok(r) => r,
+            Err(e) => panic!("run failed: {}", e),
+        };
+
+        let expected_report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+
+        assert_eq!(res.final_persona, OutputPersona::GenericBleGamepad16);
+        assert_eq!(res.final_report, expected_report);
+        assert_eq!(
+            res.final_encoded.as_bytes(),
+            encode_generic_ble_gamepad16_report(expected_report).as_bytes()
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn run_replay_script_supports_detach() {
+        let script = r#"
+            ATTACH 101 1 2
+            DESCRIPTOR 05 01 15 81 25 7F 75 08 95 01 09 30 81 02 09 31 81 02
+            INPUT 00 05 F6
+            DETACH 101
+        "#;
+        let cmds = match parse_replay_script(script) {
+            Ok(c) => c,
+            Err(e) => panic!("parse failed: {}", e),
+        };
+        let res = match run_replay_host(cmds) {
+            Ok(r) => r,
+            Err(e) => panic!("run failed: {}", e),
+        };
+
+        assert_eq!(res.final_report, GenericBleGamepad16Report::default());
+        assert_eq!(
+            res.final_encoded.as_bytes(),
+            encode_generic_ble_gamepad16_report(GenericBleGamepad16Report::default()).as_bytes()
+        );
+    }
+
+    #[test]
+    fn parse_replay_script_errors_on_unknown_command() {
+        let script = "UNKNOWN 1 2 3";
+        match parse_replay_script(script) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => assert!(e.contains("unknown command UNKNOWN")),
+        }
+    }
+
+    #[test]
+    fn parse_replay_script_errors_on_malformed_hex() {
+        let script = "DESCRIPTOR 0G";
+        match parse_replay_script(script) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => assert!(e.contains("invalid hex byte 0G")),
+        }
     }
 
     #[cfg(not(target_os = "espidf"))]
