@@ -213,6 +213,7 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, HostToo
     use usb2ble_platform_espidf::usb_host::{DeviceMeta, UsbDeviceId, UsbEvent};
 
     let mut runtime = EmbeddedRuntimeState::new_for_host();
+    runtime.set_ble_state(BleConnectionState::Connected);
     let mut outcomes = Vec::new();
 
     for cmd in &commands {
@@ -261,7 +262,7 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, HostToo
         }
 
         let summary = runtime
-            .drain_persona_until_idle(BleConnectionState::Connected, 8)
+            .drain_persona_until_idle_with_runtime_state(8)
             .map_err(HostToolError::Drain)?;
 
         match summary.last_non_idle_outcome {
@@ -293,6 +294,7 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
     use usb2ble_platform_espidf::usb_host::{DeviceMeta, UsbDeviceId, UsbEvent};
 
     let mut runtime = EmbeddedRuntimeState::new_for_host();
+    runtime.set_ble_state(BleConnectionState::Connected);
     let boot_info = runtime.boot_info();
 
     runtime
@@ -300,7 +302,7 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
         .map_err(HostToolError::ConsolePush)?;
 
     let console_summary = runtime
-        .drain_persona_until_idle(BleConnectionState::Connected, 8)
+        .drain_persona_until_idle_with_runtime_state(8)
         .map_err(HostToolError::Drain)?;
     let console_outcome = match console_summary.last_non_idle_outcome {
         Some(app::BufferedPersonaAppPumpOutcome::Console(outcome)) => outcome,
@@ -317,7 +319,7 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
         product_id: 2,
     }));
     let usb_attach_summary = runtime
-        .drain_persona_until_idle(BleConnectionState::Connected, 8)
+        .drain_persona_until_idle_with_runtime_state(8)
         .map_err(HostToolError::Drain)?;
     let usb_attach_outcome = match usb_attach_summary.last_non_idle_outcome {
         Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
@@ -336,7 +338,7 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
         len: 18,
     });
     let usb_descriptor_summary = runtime
-        .drain_persona_until_idle(BleConnectionState::Connected, 8)
+        .drain_persona_until_idle_with_runtime_state(8)
         .map_err(HostToolError::Drain)?;
     let usb_descriptor_outcome = match usb_descriptor_summary.last_non_idle_outcome {
         Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
@@ -354,7 +356,7 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
         len: 2,
     });
     let usb_input_summary = runtime
-        .drain_persona_until_idle(BleConnectionState::Connected, 8)
+        .drain_persona_until_idle_with_runtime_state(8)
         .map_err(HostToolError::Drain)?;
     let usb_input_outcome = match usb_input_summary.last_non_idle_outcome {
         Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
@@ -398,6 +400,10 @@ fn main() {
             println!("  {}", info.active_profile.as_str());
             println!("persona");
             println!("  {}", info.output_persona.as_str());
+            println!("ble state");
+            println!("  {:?}", info.ble_state);
+            println!("bonds present");
+            println!("  {}", info.bonds_present);
             println!("descriptor");
             println!("  name: {}", info.ble_descriptor.name);
             println!("  report id: 0x{:02X}", info.ble_descriptor.report_id);
@@ -578,11 +584,19 @@ mod host_demo_tests {
 
     #[test]
     fn embedded_contract_view_data_matches_expected_boot_info() {
-        let runtime = EmbeddedRuntimeState::new_for_host();
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        runtime.set_ble_state(usb2ble_platform_espidf::ble_hid::BleConnectionState::Connected);
+        assert!(runtime.store_bonds_present(true).is_ok());
+
         let info = runtime.boot_info();
 
         assert_eq!(info.active_profile.as_str(), "t16000m_v1");
         assert_eq!(info.output_persona.as_str(), "generic_ble_gamepad_16");
+        assert_eq!(
+            info.ble_state,
+            usb2ble_platform_espidf::ble_hid::BleConnectionState::Connected
+        );
+        assert!(info.bonds_present);
         assert_eq!(info.ble_descriptor.name, "generic_ble_gamepad_16");
         assert_eq!(info.ble_descriptor.report_id, 0x01);
         assert_eq!(info.ble_descriptor.wire_len, 10);

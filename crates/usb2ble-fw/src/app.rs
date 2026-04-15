@@ -3,6 +3,8 @@
 /// The stable firmware application name.
 pub const APP_NAME: &str = "usb2ble-fw";
 
+use usb2ble_platform_espidf::nvs_store::BondStore;
+
 /// The deterministic lean v1 firmware coordinator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
@@ -240,6 +242,8 @@ pub struct EmbeddedRuntimeState {
     pub usb_ingress: usb2ble_platform_espidf::usb_host::QueuedUsbIngress,
     /// The persona-wire recording BLE output sink.
     pub ble_output: usb2ble_platform_espidf::ble_hid::PersonaWireRecordingBleOutput,
+    /// The current BLE link state.
+    pub ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
 }
 
 impl EmbeddedRuntimeState {
@@ -253,6 +257,7 @@ impl EmbeddedRuntimeState {
         let ble_output = usb2ble_platform_espidf::ble_hid::PersonaWireRecordingBleOutput::new(
             usb2ble_platform_espidf::ble_hid::BleConnectionState::Idle,
         );
+        let ble_state = usb2ble_platform_espidf::ble_hid::BleConnectionState::Idle;
 
         Self {
             app,
@@ -261,7 +266,39 @@ impl EmbeddedRuntimeState {
             console_buffer,
             usb_ingress,
             ble_output,
+            ble_state,
         }
+    }
+
+    /// Returns the current BLE link state.
+    pub fn ble_state(&self) -> usb2ble_platform_espidf::ble_hid::BleConnectionState {
+        self.ble_state
+    }
+
+    /// Updates the stored BLE link state.
+    pub fn set_ble_state(
+        &mut self,
+        ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+    ) {
+        self.ble_state = ble_state;
+    }
+
+    /// Returns whether any persisted bonds are present.
+    pub fn bonds_present(&self) -> bool {
+        self.bond_store.bonds_present()
+    }
+
+    /// Persists whether bonds are present.
+    pub fn store_bonds_present(
+        &mut self,
+        bonds_present: bool,
+    ) -> Result<(), usb2ble_platform_espidf::nvs_store::StoreError> {
+        self.bond_store.store_bonds_present(bonds_present)
+    }
+
+    /// Returns the current typed device status for the owned state.
+    pub fn device_status(&self) -> usb2ble_proto::messages::DeviceStatus {
+        self.app.device_status(self.ble_state, &self.bond_store)
     }
 
     /// Returns a snapshot of the current boot and contract information.
@@ -271,6 +308,8 @@ impl EmbeddedRuntimeState {
             output_persona: self.app.current_output_persona(),
             ble_descriptor: self.app.current_ble_persona_descriptor(),
             initial_encoded_report: self.app.current_encoded_ble_input_report(),
+            ble_state: self.ble_state,
+            bonds_present: self.bonds_present(),
         }
     }
 
@@ -326,6 +365,8 @@ impl EmbeddedRuntimeState {
             current_encoded_report: self.app.current_encoded_ble_input_report(),
             last_persona: self.ble_output.last_persona(),
             last_wire: self.ble_output.last_wire(),
+            ble_state: self.ble_state,
+            bonds_present: self.bonds_present(),
         }
     }
 
@@ -348,6 +389,21 @@ impl EmbeddedRuntimeState {
     /// Returns the valid queued TX bytes from the console buffer.
     pub fn console_tx_bytes(&self) -> &[u8] {
         self.console_buffer.tx_bytes()
+    }
+
+    /// Services at most one embedded action using the owned BLE link state.
+    pub fn step_persona_with_runtime_state(
+        &mut self,
+    ) -> Result<BufferedPersonaAppPumpOutcome, BufferedPersonaAppPumpError> {
+        self.step_persona(self.ble_state)
+    }
+
+    /// Repeatedly services the runtime using the owned BLE link state until idle.
+    pub fn drain_persona_until_idle_with_runtime_state(
+        &mut self,
+        max_steps: usize,
+    ) -> Result<EmbeddedDrainSummary, EmbeddedDrainError> {
+        self.drain_persona_until_idle(self.ble_state, max_steps)
     }
 
     /// Repeatedly services the runtime until an idle state or step limit is reached.
@@ -405,6 +461,10 @@ pub struct EmbeddedRuntimeSnapshot {
     pub last_persona: Option<usb2ble_core::profile::OutputPersona>,
     /// The last published persona-encoded wire report, if any.
     pub last_wire: Option<usb2ble_platform_espidf::ble_hid::EncodedBleInputReport>,
+    /// The BLE link state in the snapshot.
+    pub ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+    /// Whether bonds were present in the snapshot.
+    pub bonds_present: bool,
 }
 
 /// The result of one embedded runtime step together with the updated state.
@@ -452,6 +512,10 @@ pub struct EmbeddedBootInfo {
     pub ble_descriptor: usb2ble_platform_espidf::ble_hid::BlePersonaDescriptor,
     /// The initial encoded BLE report for the active persona.
     pub initial_encoded_report: usb2ble_platform_espidf::ble_hid::EncodedBleInputReport,
+    /// The BLE link state at boot.
+    pub ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+    /// Whether bonds were present at boot.
+    pub bonds_present: bool,
 }
 
 /// Bootstraps the application with the default host-side profile store.
@@ -5129,11 +5193,16 @@ mod tests {
     fn embedded_runtime_state_new_for_host_bootstraps_v1_profile() {
         let runtime = EmbeddedRuntimeState::new_for_host();
         assert_eq!(runtime.app.runtime().active_profile(), V1_PROFILE_ID);
+        assert_eq!(runtime.ble_state(), BleConnectionState::Idle);
+        assert!(!runtime.bonds_present());
     }
 
     #[test]
     fn embedded_runtime_state_boot_info_matches_app_contract() {
-        let runtime = EmbeddedRuntimeState::new_for_host();
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        runtime.set_ble_state(BleConnectionState::Connected);
+        assert!(runtime.store_bonds_present(true).is_ok());
+
         let info = runtime.boot_info();
 
         assert_eq!(info.active_profile, V1_PROFILE_ID);
@@ -5150,6 +5219,8 @@ mod tests {
                 GenericBleGamepad16Report::default()
             )
         );
+        assert_eq!(info.ble_state, BleConnectionState::Connected);
+        assert!(info.bonds_present);
     }
 
     #[test]
@@ -5318,7 +5389,10 @@ mod tests {
 
     #[test]
     fn embedded_runtime_snapshot_matches_default_boot_state() {
-        let runtime = EmbeddedRuntimeState::new_for_host();
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        runtime.set_ble_state(BleConnectionState::Advertising);
+        assert!(runtime.store_bonds_present(true).is_ok());
+
         let snapshot = runtime.snapshot();
 
         assert_eq!(snapshot.active_profile, V1_PROFILE_ID);
@@ -5335,6 +5409,22 @@ mod tests {
         );
         assert!(snapshot.last_persona.is_none());
         assert!(snapshot.last_wire.is_none());
+        assert_eq!(snapshot.ble_state, BleConnectionState::Advertising);
+        assert!(snapshot.bonds_present);
+    }
+
+    #[test]
+    fn embedded_runtime_state_device_status_reflects_owned_state() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        runtime.set_ble_state(BleConnectionState::Connected);
+        assert!(runtime.store_bonds_present(true).is_ok());
+
+        let status = runtime.device_status();
+        assert_eq!(
+            status.ble_link_state,
+            usb2ble_proto::messages::BleLinkState::Connected
+        );
+        assert!(status.bonds_present);
     }
 
     #[test]
