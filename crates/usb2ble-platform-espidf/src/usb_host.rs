@@ -60,10 +60,10 @@ pub trait UsbIngress {
     fn poll_event(&mut self) -> Option<UsbEvent>;
 }
 
-/// In-memory single-slot USB ingress adapter for host-side use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// In-memory multi-slot USB ingress adapter for host-side use.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedUsbIngress {
-    next_event: Option<UsbEvent>,
+    events: std::collections::VecDeque<UsbEvent>,
     poll_calls: usize,
 }
 
@@ -77,22 +77,30 @@ impl QueuedUsbIngress {
     /// Creates an empty queued ingress adapter.
     pub fn new() -> Self {
         Self {
-            next_event: None,
+            events: std::collections::VecDeque::new(),
             poll_calls: 0,
         }
     }
 
     /// Creates an ingress adapter with one queued event.
     pub fn with_event(event: UsbEvent) -> Self {
+        let mut events = std::collections::VecDeque::new();
+        events.push_back(event);
         Self {
-            next_event: Some(event),
+            events,
             poll_calls: 0,
         }
     }
 
-    /// Queues or replaces the next event to be returned.
+    /// Queues an event to be returned.
     pub fn queue_event(&mut self, event: UsbEvent) {
-        self.next_event = Some(event);
+        self.events.push_back(event);
+    }
+
+    /// Replaces the entire queue with a single event.
+    pub fn set_event(&mut self, event: UsbEvent) {
+        self.events.clear();
+        self.events.push_back(event);
     }
 
     /// Returns how many times the ingress has been polled.
@@ -104,6 +112,6 @@ impl QueuedUsbIngress {
 impl UsbIngress for QueuedUsbIngress {
     fn poll_event(&mut self) -> Option<UsbEvent> {
         self.poll_calls += 1;
-        self.next_event.take()
+        self.events.pop_front()
     }
 }

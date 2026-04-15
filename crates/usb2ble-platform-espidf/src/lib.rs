@@ -147,12 +147,25 @@ mod tests {
     }
 
     #[test]
-    fn queued_usb_ingress_queue_event_replaces_queued_event() {
+    fn queued_usb_ingress_queue_event_appends_to_queue() {
         let first = UsbEvent::DeviceDetached(UsbDeviceId::new(1));
         let second = UsbEvent::DeviceDetached(UsbDeviceId::new(2));
         let mut ingress = QueuedUsbIngress::with_event(first);
 
         ingress.queue_event(second);
+
+        assert_eq!(ingress.poll_event(), Some(first));
+        assert_eq!(ingress.poll_event(), Some(second));
+        assert_eq!(ingress.poll_event(), None);
+    }
+
+    #[test]
+    fn queued_usb_ingress_set_event_replaces_queue() {
+        let first = UsbEvent::DeviceDetached(UsbDeviceId::new(1));
+        let second = UsbEvent::DeviceDetached(UsbDeviceId::new(2));
+        let mut ingress = QueuedUsbIngress::with_event(first);
+
+        ingress.set_event(second);
 
         assert_eq!(ingress.poll_event(), Some(second));
         assert_eq!(ingress.poll_event(), None);

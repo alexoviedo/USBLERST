@@ -207,12 +207,12 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
 
         match summary.last_non_idle_outcome {
             Some(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcomes.push(outcome),
-            None => outcomes.push(app::UsbPersonaPumpOutcome::Idle),
+            None => return Err("replay command produced no work".to_string()),
             Some(app::BufferedPersonaAppPumpOutcome::Console(_)) => {
-                return Err("unexpected console outcome in replay".to_string())
+                return Err("replay currently expects USB-side outcomes only".to_string())
             }
             Some(app::BufferedPersonaAppPumpOutcome::Idle) => {
-                outcomes.push(app::UsbPersonaPumpOutcome::Idle)
+                return Err("replay command produced no work".to_string())
             }
         }
     }

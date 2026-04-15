@@ -226,7 +226,7 @@ pub enum BootstrapError {
 }
 
 /// Embedded-facing runtime state for deterministic host testing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedRuntimeState {
     /// The core application coordinator.
     pub app: App,
@@ -5405,6 +5405,7 @@ mod tests {
         };
 
         assert_eq!(summary.actions_processed, 0);
+        assert_eq!(summary.last_non_idle_outcome, None);
         assert_eq!(summary.final_snapshot, runtime.snapshot());
         assert_eq!(
             summary.final_snapshot.current_report,
@@ -5436,27 +5437,26 @@ mod tests {
         }
         assert!(!runtime.console_tx_bytes().is_empty());
         assert!(summary.final_snapshot.last_persona.is_none());
+        assert!(runtime.ble_output.last_persona().is_none());
     }
 
     #[test]
-    fn embedded_runtime_state_drain_persona_until_idle_processes_usb_attach_descriptor_input() {
+    fn embedded_runtime_state_drain_persona_until_idle_processes_usb_attach_descriptor_input_in_one_drain(
+    ) {
         let mut runtime = EmbeddedRuntimeState::new_for_host();
         let device_id = UsbDeviceId::new(13);
 
+        // Queue ALL THREE before one drain call
         runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
             device_id,
             vendor_id: 1,
             product_id: 2,
         }));
-        let _ = runtime.drain_persona_until_idle(BleConnectionState::Connected, 8);
-
         runtime.queue_usb_event(UsbEvent::ReportDescriptorReceived {
             device_id,
             bytes: xy_descriptor_bytes(),
             len: 18,
         });
-        let _ = runtime.drain_persona_until_idle(BleConnectionState::Connected, 8);
-
         let mut payload = [0_u8; 64];
         payload[0] = 0x05;
         payload[1] = 0xF6;
@@ -5472,7 +5472,7 @@ mod tests {
             Err(error) => panic!("drain failed: {:?}", error),
         };
 
-        assert_eq!(summary.actions_processed, 1);
+        assert_eq!(summary.actions_processed, 3);
         let report = GenericBleGamepad16Report {
             x: 5,
             y: -10,
@@ -5493,21 +5493,23 @@ mod tests {
                 assert_eq!(p, persona);
                 assert_eq!(e, encoded);
             }
-            _ => panic!(
-                "expected Published outcome, got {:?}",
-                summary.last_non_idle_outcome
-            ),
+            _ => {
+                panic!(
+                    "expected Published outcome, got {:?}",
+                    summary.last_non_idle_outcome
+                )
+            }
         }
 
         assert_eq!(summary.final_snapshot.current_report, report);
         assert_eq!(summary.final_snapshot.output_persona, persona);
         assert_eq!(summary.final_snapshot.current_encoded_report, encoded);
         assert_eq!(summary.final_snapshot.last_persona, Some(persona));
-        assert!(summary.final_snapshot.last_wire.is_some());
+        assert_eq!(summary.final_snapshot.last_wire, Some(encoded));
     }
 
     #[test]
-    fn embedded_runtime_state_drain_persona_until_idle_processes_multiple_actions_in_one_drain() {
+    fn embedded_runtime_state_drain_persona_until_idle_respects_console_priority_before_usb() {
         let mut runtime = EmbeddedRuntimeState::new_for_host();
         let device_id = UsbDeviceId::new(14);
 
@@ -5532,10 +5534,12 @@ mod tests {
             ))) => {
                 assert_eq!(id, device_id);
             }
-            _ => panic!(
-                "expected USB Attach outcome, got {:?}",
-                summary.last_non_idle_outcome
-            ),
+            _ => {
+                panic!(
+                    "expected USB Attach outcome, got {:?}",
+                    summary.last_non_idle_outcome
+                )
+            }
         }
         assert_eq!(runtime.active_device(), Some(device_id));
         assert!(!runtime.console_tx_bytes().is_empty());
