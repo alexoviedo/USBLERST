@@ -4650,4 +4650,242 @@ mod tests {
         assert_eq!(ble_output.last_persona(), None);
         assert_eq!(ble_output.last_wire(), None);
     }
+
+    #[test]
+    fn service_once_persona_with_platform_adapters_handles_console_get_info() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut command_source = QueuedCommandSource::with_command(Command::GetInfo);
+        let mut response_sink = RecordingResponseSink::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = QueuedUsbIngress::new();
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
+
+        let expected_info = app.device_info();
+
+        assert_eq!(
+            app.service_once_persona(
+                &mut command_source,
+                &mut response_sink,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Idle,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(PersonaAppPumpOutcome::Console(ServiceOutcome::Responded(
+                Response::Info(expected_info)
+            )))
+        );
+
+        assert_eq!(
+            response_sink.last_response(),
+            Some(Response::Info(expected_info))
+        );
+        assert_eq!(response_sink.send_calls(), 1);
+        assert_eq!(command_source.poll_calls(), 1);
+        assert_eq!(usb_ingress.poll_calls(), 0);
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
+    }
+
+    #[test]
+    fn service_once_persona_with_platform_adapters_runs_usb_pipeline_end_to_end() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut command_source = QueuedCommandSource::new();
+        let mut response_sink = RecordingResponseSink::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = QueuedUsbIngress::new();
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        let device_id = UsbDeviceId::new(91);
+
+        // Stage 1: Attach
+        usb_ingress.queue_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+
+        assert_eq!(
+            app.service_once_persona(
+                &mut command_source,
+                &mut response_sink,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Connected,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(PersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
+                UsbServiceOutcome::DeviceAttached(device_id)
+            )))
+        );
+
+        // Stage 2: Descriptor
+        usb_ingress.queue_event(UsbEvent::ReportDescriptorReceived {
+            device_id,
+            bytes: xy_descriptor_bytes(),
+            len: 18,
+        });
+
+        assert_eq!(
+            app.service_once_persona(
+                &mut command_source,
+                &mut response_sink,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Connected,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(PersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
+                UsbServiceOutcome::DescriptorStored {
+                    device_id,
+                    field_count: 2,
+                }
+            )))
+        );
+
+        // Stage 3: Input
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        usb_ingress.queue_event(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let expected_report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        let expected_persona = OutputPersona::GenericBleGamepad16;
+        let expected_encoded = encode_generic_ble_gamepad16_report(expected_report);
+
+        assert_eq!(
+            app.service_once_persona(
+                &mut command_source,
+                &mut response_sink,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Connected,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(PersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Published {
+                    report: expected_report,
+                    persona: expected_persona,
+                    encoded: expected_encoded,
+                }
+            ))
+        );
+
+        assert_eq!(ble_output.last_persona(), Some(expected_persona));
+        assert_eq!(ble_output.last_wire(), Some(expected_encoded));
+        assert_eq!(response_sink.last_response(), None);
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_with_platform_adapters_prioritizes_console_then_usb(
+    ) {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::new();
+        let mut usb_ingress = QueuedUsbIngress::with_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id: UsbDeviceId::new(92),
+            vendor_id: 1,
+            product_id: 2,
+        }));
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Connected);
+
+        let expected_info = app.device_info();
+
+        // Push RX bytes
+        assert_eq!(buffer.push_rx_bytes(b"GET_INFO\n"), Ok(()));
+
+        // First call: Console priority
+        assert_eq!(
+            app.service_once_with_console_buffer_persona(
+                &mut buffer,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Connected,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(BufferedPersonaAppPumpOutcome::Console(
+                BufferedConsoleOutcome::Responded(Response::Info(expected_info))
+            ))
+        );
+
+        assert!(buffer
+            .tx_bytes()
+            .windows(5)
+            .any(|window| window == b"INFO|"));
+        assert_eq!(app.active_device(), None);
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
+
+        // Second call: Handle queued USB event
+        assert_eq!(
+            app.service_once_with_console_buffer_persona(
+                &mut buffer,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Connected,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(BufferedPersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(
+                    UsbDeviceId::new(92)
+                ))
+            ))
+        );
+
+        assert_eq!(app.active_device(), Some(UsbDeviceId::new(92)));
+    }
+
+    #[test]
+    fn service_once_with_console_buffer_persona_with_platform_adapters_forget_bonds_roundtrip() {
+        let mut app = App::new(V1_PROFILE_ID);
+        let mut buffer = FramedConsoleBuffer::new();
+        let mut profile_store = MemoryProfileStore::new();
+        let mut bond_store = MemoryBondStore::with_bonds_present(true);
+        let mut usb_ingress = QueuedUsbIngress::new();
+        let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
+
+        // Push RX bytes
+        assert_eq!(buffer.push_rx_bytes(b"FORGET_BONDS\n"), Ok(()));
+
+        // Call: Handle forget bonds
+        assert_eq!(
+            app.service_once_with_console_buffer_persona(
+                &mut buffer,
+                &mut profile_store,
+                &mut bond_store,
+                BleConnectionState::Idle,
+                &mut usb_ingress,
+                &mut ble_output,
+            ),
+            Ok(BufferedPersonaAppPumpOutcome::Console(
+                BufferedConsoleOutcome::Responded(Response::Ack)
+            ))
+        );
+
+        assert!(!bond_store.bonds_present());
+        assert_eq!(buffer.tx_bytes(), b"ACK\n");
+        assert_eq!(usb_ingress.poll_calls(), 0);
+        assert_eq!(ble_output.last_persona(), None);
+        assert_eq!(ble_output.last_wire(), None);
+    }
 }
