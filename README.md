@@ -35,6 +35,19 @@ Iterate quickly by replaying scripted USB events:
 cargo run -p usb2ble-fw -- --replay-host path/to/script.txt
 ```
 
+### Replay Fixtures
+
+Committed regression fixtures are available in `fixtures/replay/`:
+
+- `xy_input.txt`: Attaches a device, provides a descriptor, and sends a known X/Y report.
+- `xy_input_detach.txt`: Same as above, but adds a detach command to verify state reset.
+
+Run them with:
+```bash
+cargo run -p usb2ble-fw -- --replay-host fixtures/replay/xy_input.txt
+cargo run -p usb2ble-fw -- --replay-host fixtures/replay/xy_input_detach.txt
+```
+
 ### Script Format
 
 - `ATTACH <device_id> <vendor_id> <product_id>`
