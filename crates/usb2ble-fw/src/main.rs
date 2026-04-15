@@ -203,7 +203,8 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
             }
         }
 
-        match runtime.step_persona(BleConnectionState::Connected) {
+        let snapshot = runtime.step_persona_snapshot(BleConnectionState::Connected);
+        match snapshot.outcome {
             Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcomes.push(outcome),
             Ok(app::BufferedPersonaAppPumpOutcome::Idle) => {
                 outcomes.push(app::UsbPersonaPumpOutcome::Idle)
@@ -215,12 +216,14 @@ fn run_replay_host(commands: Vec<ReplayCommand>) -> Result<ReplayResult, String>
         }
     }
 
+    let final_snapshot = runtime.snapshot();
+
     Ok(ReplayResult {
         command_count: commands.len(),
         outcomes,
-        final_persona: runtime.app.current_output_persona(),
-        final_report: runtime.current_report(),
-        final_encoded: runtime.app.current_encoded_ble_input_report(),
+        final_persona: final_snapshot.output_persona,
+        final_report: final_snapshot.current_report,
+        final_encoded: final_snapshot.current_encoded_report,
     })
 }
 
@@ -236,7 +239,8 @@ fn run_host_demo() -> HostDemoResult {
         panic!("demo console push failed: {:?}", e);
     }
 
-    let console_outcome = match runtime.step_persona(BleConnectionState::Connected) {
+    let console_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
+    let console_outcome = match console_snap.outcome {
         Ok(app::BufferedPersonaAppPumpOutcome::Console(outcome)) => outcome,
         other => panic!("expected console outcome, got {:?}", other),
     };
@@ -249,7 +253,8 @@ fn run_host_demo() -> HostDemoResult {
         vendor_id: 1,
         product_id: 2,
     }));
-    let usb_attach_outcome = match runtime.step_persona(BleConnectionState::Connected) {
+    let usb_attach_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
+    let usb_attach_outcome = match usb_attach_snap.outcome {
         Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
@@ -264,7 +269,8 @@ fn run_host_demo() -> HostDemoResult {
         bytes: descriptor_bytes,
         len: 18,
     });
-    let usb_descriptor_outcome = match runtime.step_persona(BleConnectionState::Connected) {
+    let usb_descriptor_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
+    let usb_descriptor_outcome = match usb_descriptor_snap.outcome {
         Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
@@ -278,10 +284,13 @@ fn run_host_demo() -> HostDemoResult {
         bytes: report_payload,
         len: 2,
     });
-    let usb_input_outcome = match runtime.step_persona(BleConnectionState::Connected) {
+    let usb_input_snap = runtime.step_persona_snapshot(BleConnectionState::Connected);
+    let usb_input_outcome = match usb_input_snap.outcome {
         Ok(app::BufferedPersonaAppPumpOutcome::Usb(outcome)) => outcome,
         other => panic!("expected usb outcome, got {:?}", other),
     };
+
+    let final_snapshot = usb_input_snap.runtime;
 
     HostDemoResult {
         boot_profile: boot_info.active_profile,
@@ -293,11 +302,11 @@ fn run_host_demo() -> HostDemoResult {
         usb_attach_outcome,
         usb_descriptor_outcome,
         usb_input_outcome,
-        final_report: runtime.current_report(),
-        final_persona: runtime.app.current_output_persona(),
-        final_encoded: runtime.app.current_encoded_ble_input_report(),
-        last_persona: runtime.last_persona(),
-        last_wire: runtime.last_wire(),
+        final_report: final_snapshot.current_report,
+        final_persona: final_snapshot.output_persona,
+        final_encoded: final_snapshot.current_encoded_report,
+        last_persona: final_snapshot.last_persona,
+        last_wire: final_snapshot.last_wire,
     }
 }
 

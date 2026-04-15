@@ -316,6 +316,55 @@ impl EmbeddedRuntimeState {
     pub fn last_wire(&self) -> Option<usb2ble_platform_espidf::ble_hid::EncodedBleInputReport> {
         self.ble_output.last_wire()
     }
+
+    /// Returns a full snapshot of the current runtime state.
+    pub fn snapshot(&self) -> EmbeddedRuntimeSnapshot {
+        EmbeddedRuntimeSnapshot {
+            active_profile: self.app.runtime().active_profile(),
+            output_persona: self.app.current_output_persona(),
+            current_report: self.app.runtime().current_report(),
+            current_encoded_report: self.app.current_encoded_ble_input_report(),
+            last_persona: self.ble_output.last_persona(),
+            last_wire: self.ble_output.last_wire(),
+        }
+    }
+
+    /// Services one embedded action and returns the outcome and updated state.
+    pub fn step_persona_snapshot(
+        &mut self,
+        ble_state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+    ) -> EmbeddedStepSnapshot {
+        let outcome = self.step_persona(ble_state);
+        let runtime = self.snapshot();
+
+        EmbeddedStepSnapshot { outcome, runtime }
+    }
+}
+
+/// A snapshot of the runtime state for observation and testing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedRuntimeSnapshot {
+    /// The active profile ID.
+    pub active_profile: usb2ble_core::profile::ProfileId,
+    /// The implied output persona.
+    pub output_persona: usb2ble_core::profile::OutputPersona,
+    /// The current normalized input report.
+    pub current_report: usb2ble_core::runtime::GenericBleGamepad16Report,
+    /// The current persona-encoded BLE report.
+    pub current_encoded_report: usb2ble_platform_espidf::ble_hid::EncodedBleInputReport,
+    /// The last published output persona, if any.
+    pub last_persona: Option<usb2ble_core::profile::OutputPersona>,
+    /// The last published persona-encoded wire report, if any.
+    pub last_wire: Option<usb2ble_platform_espidf::ble_hid::EncodedBleInputReport>,
+}
+
+/// The result of one embedded runtime step together with the updated state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedStepSnapshot {
+    /// The outcome of the step.
+    pub outcome: Result<BufferedPersonaAppPumpOutcome, BufferedPersonaAppPumpError>,
+    /// The updated runtime state snapshot after the step.
+    pub runtime: EmbeddedRuntimeSnapshot,
 }
 
 /// Reusable boot and contract information for the embedded runtime.
@@ -5186,5 +5235,88 @@ mod tests {
         assert_eq!(runtime.current_report(), report);
         assert_eq!(runtime.last_persona(), Some(persona));
         assert_eq!(runtime.last_wire(), Some(encoded));
+    }
+
+    #[test]
+    fn embedded_runtime_snapshot_matches_default_boot_state() {
+        let runtime = EmbeddedRuntimeState::new_for_host();
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.active_profile, V1_PROFILE_ID);
+        assert_eq!(snapshot.output_persona, OutputPersona::GenericBleGamepad16);
+        assert_eq!(
+            snapshot.current_report,
+            GenericBleGamepad16Report::default()
+        );
+        assert_eq!(
+            snapshot.current_encoded_report,
+            usb2ble_platform_espidf::ble_hid::encode_generic_ble_gamepad16_report(
+                GenericBleGamepad16Report::default()
+            )
+        );
+        assert!(snapshot.last_persona.is_none());
+        assert!(snapshot.last_wire.is_none());
+    }
+
+    #[test]
+    fn embedded_runtime_step_snapshot_includes_outcome_and_updated_state() {
+        let mut runtime = EmbeddedRuntimeState::new_for_host();
+        let device_id = UsbDeviceId::new(12);
+
+        // Queue attach
+        runtime.queue_usb_event(UsbEvent::DeviceAttached(DeviceMeta {
+            device_id,
+            vendor_id: 1,
+            product_id: 2,
+        }));
+        let _ = runtime.step_persona_snapshot(BleConnectionState::Connected);
+
+        // Queue descriptor
+        runtime.queue_usb_event(UsbEvent::ReportDescriptorReceived {
+            device_id,
+            bytes: xy_descriptor_bytes(),
+            len: 18,
+        });
+        let _ = runtime.step_persona_snapshot(BleConnectionState::Connected);
+
+        // Queue input [0x05, 0xF6]
+        let mut payload = [0_u8; 64];
+        payload[0] = 0x05;
+        payload[1] = 0xF6;
+        runtime.queue_usb_event(UsbEvent::InputReportReceived {
+            device_id,
+            report_id: 0,
+            bytes: payload,
+            len: 2,
+        });
+
+        let snapshot = runtime.step_persona_snapshot(BleConnectionState::Connected);
+
+        let report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0,
+        };
+        let persona = OutputPersona::GenericBleGamepad16;
+        let encoded = encode_generic_ble_gamepad16_report(report);
+
+        assert_eq!(
+            snapshot.outcome,
+            Ok(BufferedPersonaAppPumpOutcome::Usb(
+                UsbPersonaPumpOutcome::Published {
+                    report,
+                    persona,
+                    encoded
+                }
+            ))
+        );
+
+        assert_eq!(snapshot.runtime.current_report, report);
+        assert_eq!(snapshot.runtime.output_persona, persona);
+        assert_eq!(snapshot.runtime.current_encoded_report, encoded);
+        assert_eq!(snapshot.runtime.last_persona, Some(persona));
+        assert_eq!(snapshot.runtime.last_wire, Some(encoded));
     }
 }
