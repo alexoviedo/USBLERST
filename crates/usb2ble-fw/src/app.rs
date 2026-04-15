@@ -1056,8 +1056,13 @@ mod tests {
             self.bonds_present
         }
 
+        fn store_bonds_present(&mut self, bonds_present: bool) -> Result<(), StoreError> {
+            self.bonds_present = bonds_present;
+            Ok(())
+        }
+
         fn clear_bonds(&mut self) -> Result<(), StoreError> {
-            self.bonds_present = false;
+            let _ = self.store_bonds_present(false);
             self.clear_calls += 1;
             Ok(())
         }

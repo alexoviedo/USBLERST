@@ -292,6 +292,19 @@ mod tests {
     }
 
     #[test]
+    fn memory_bond_store_store_bonds_present_updates_state() {
+        let mut store = MemoryBondStore::new();
+
+        assert!(!store.bonds_present());
+
+        assert_eq!(store.store_bonds_present(true), Ok(()));
+        assert!(store.bonds_present());
+
+        assert_eq!(store.store_bonds_present(false), Ok(()));
+        assert!(!store.bonds_present());
+    }
+
+    #[test]
     fn queued_command_source_new_starts_empty() {
         let mut source = QueuedCommandSource::new();
 
