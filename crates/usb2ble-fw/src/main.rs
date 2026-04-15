@@ -19,7 +19,9 @@ impl std::fmt::Display for ReplayParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidAttach(line) => write!(f, "line {}: ATTACH requires 3 arguments", line),
-            Self::InvalidDescriptor(line, msg) => write!(f, "line {}: descriptor error: {}", line, msg),
+            Self::InvalidDescriptor(line, msg) => {
+                write!(f, "line {}: descriptor error: {}", line, msg)
+            }
             Self::DescriptorTooLong(line, len) => {
                 write!(f, "line {}: descriptor too long ({} > 64)", line, len)
             }
@@ -54,7 +56,11 @@ impl std::fmt::Display for HostToolError {
             Self::ReplayNoWork => write!(f, "replay command produced no work"),
             Self::UnexpectedConsoleOutcome => write!(f, "unexpected console outcome during replay"),
             Self::UnexpectedDemoOutcome(stage, outcome) => {
-                write!(f, "unexpected outcome during demo stage {}: {:?}", stage, outcome)
+                write!(
+                    f,
+                    "unexpected outcome during demo stage {}: {:?}",
+                    stage, outcome
+                )
             }
         }
     }
@@ -699,7 +705,10 @@ mod host_demo_tests {
         // }
 
         // Let's add a small direct test for the error variant.
-        assert_eq!(format!("{}", HostToolError::ReplayNoWork), "replay command produced no work");
+        assert_eq!(
+            format!("{}", HostToolError::ReplayNoWork),
+            "replay command produced no work"
+        );
     }
 
     #[cfg(not(target_os = "espidf"))]
@@ -765,7 +774,10 @@ mod host_demo_tests {
         let script = "UNKNOWN 1 2 3";
         match parse_replay_script(script) {
             Ok(_) => panic!("expected error"),
-            Err(e) => assert_eq!(e, ReplayParseError::UnknownCommand(1, "UNKNOWN".to_string())),
+            Err(e) => assert_eq!(
+                e,
+                ReplayParseError::UnknownCommand(1, "UNKNOWN".to_string())
+            ),
         }
     }
 
