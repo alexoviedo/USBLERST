@@ -34,6 +34,8 @@ For ESP-IDF targets, the firmware includes a hardware smoke path accessible via 
 
 After flashing, you can interact with the firmware over the default serial console using the internal protocol commands (newline-terminated).
 
+The firmware also attempts to initialize the USB host stack. If successful, plugging or unplugging a USB device will produce `usb attach` or `usb detach` log lines in the console. Full HID parsing is not yet implemented in this smoke path.
+
 ### Example Commands
 
 - `GET_INFO`: Returns firmware identity and contract info.

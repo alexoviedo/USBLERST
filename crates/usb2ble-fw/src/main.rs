@@ -408,11 +408,20 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
     use usb2ble_platform_espidf::ble_hid::BleConnectionState;
     use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
     use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
+    use usb2ble_platform_espidf::usb_host::{EspUsbHostIngress, UsbIngress};
 
     let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedSmokeError::ProfileStore)?;
     let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedSmokeError::BondStore)?;
     let mut uart_console =
         EspUartBufferedConsole::new_default().map_err(EmbeddedSmokeError::Console)?;
+
+    let mut usb_host = match EspUsbHostIngress::new_single_client() {
+        Ok(host) => Some(host),
+        Err(e) => {
+            println!("warning: USB host initialization failed: {:?}", e);
+            None
+        }
+    };
 
     let mut app = App::bootstrap(&profile_store);
     let mut console_buffer = FramedConsoleBuffer::new();
@@ -430,6 +439,26 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
     println!("console is ready for commands");
 
     loop {
+        if let Some(ref mut host) = usb_host {
+            let _ = host.service_until_idle();
+            while let Some(event) = host.poll_event() {
+                match event {
+                    usb2ble_platform_espidf::usb_host::UsbEvent::DeviceAttached(meta) => {
+                        println!(
+                            "usb attach: id={} vid=0x{:04X} pid=0x{:04X}",
+                            meta.device_id.raw(),
+                            meta.vendor_id,
+                            meta.product_id
+                        );
+                    }
+                    usb2ble_platform_espidf::usb_host::UsbEvent::DeviceDetached(id) => {
+                        println!("usb detach: id={}", id.raw());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if let Err(e) = uart_console.pull_rx_into(&mut console_buffer) {
             println!("recoverable RX error: {:?}", e);
         }
