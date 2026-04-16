@@ -28,6 +28,20 @@ cargo run -p usb2ble-fw -- --demo-host
 ```
 This demonstrates the end-to-end app pipeline from boot through console commands and USB ingress reports to persona-encoded BLE wire bytes.
 
+## Hardware Smoke Path
+
+For ESP-IDF targets, the firmware includes a UART console smoke path. This allows developers to interact with the runtime state and NVS storage on real hardware before the BLE and USB transports are fully implemented.
+
+After flashing, you can interact with the firmware over UART using the internal protocol commands (newline-terminated).
+
+### Example Commands
+
+- `GET_INFO`: Returns firmware identity and contract info.
+- `GET_STATUS`: Returns current BLE state, bond presence, and active profile.
+- `GET_PROFILE`: Returns the active profile ID.
+- `SET_PROFILE|t16000m_v1`: Persists a new active profile to NVS.
+- `FORGET_BONDS`: Clears all persisted BLE bonds from NVS.
+
 ## Host Replay Mode
 
 Iterate quickly by replaying scripted USB events:

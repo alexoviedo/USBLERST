@@ -1,3 +1,10 @@
+#[cfg(target_os = "espidf")]
+use esp_idf_svc::hal::gpio;
+#[cfg(target_os = "espidf")]
+use esp_idf_svc::hal::prelude::*;
+#[cfg(target_os = "espidf")]
+use esp_idf_svc::hal::uart;
+
 /// Fixed-capacity RX buffer size for framed console bytes.
 pub const RX_BUFFER_CAPACITY: usize = 128;
 
@@ -63,6 +70,108 @@ pub struct FramedConsoleBuffer {
 impl Default for FramedConsoleBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// ESP-IDF-backed UART console transport for embedded builds.
+#[cfg(target_os = "espidf")]
+pub struct EspUartBufferedConsole {
+    driver: uart::UartDriver<'static>,
+}
+
+/// Host stub for the ESP-IDF-backed UART console transport.
+#[cfg(not(target_os = "espidf"))]
+pub struct EspUartBufferedConsole;
+
+#[cfg(target_os = "espidf")]
+impl EspUartBufferedConsole {
+    /// Creates a UART transport using default UART0 settings.
+    pub fn new_default() -> Result<Self, ConsoleError> {
+        let peripherals = Peripherals::take().map_err(|_| ConsoleError::Transport)?;
+        let config = uart::config::Config::new().baudrate(115_200.into());
+
+        // Use the default console UART path (UART0) with HAL defaults
+        let driver = uart::UartDriver::new(
+            peripherals.uart0,
+            peripherals.pins.gpio43,
+            peripherals.pins.gpio44,
+            Option::<gpio::Gpio0>::None,
+            Option::<gpio::Gpio0>::None,
+            &config,
+        )
+        .map_err(|_| ConsoleError::Transport)?;
+
+        Ok(Self { driver })
+    }
+
+    /// Pulls RX bytes from UART into the provided framed buffer.
+    pub fn pull_rx_into(
+        &mut self,
+        buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        let mut temp_buf = [0_u8; 64];
+
+        // Non-blocking read
+        let len = self
+            .driver
+            .read(&mut temp_buf, 0)
+            .map_err(|_| ConsoleError::Transport)?;
+
+        if len > 0 {
+            buffer
+                .push_rx_bytes(&temp_buf[..len])
+                .map_err(|_| ConsoleError::Transport)?;
+        }
+
+        Ok(len)
+    }
+
+    /// Flushes queued TX bytes from the framed buffer back to UART.
+    pub fn flush_tx_from(
+        &mut self,
+        buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        let mut temp_buf = [0_u8; 64];
+        let mut total_written = 0;
+
+        loop {
+            let drained = buffer.drain_tx_into(&mut temp_buf);
+            if drained == 0 {
+                break;
+            }
+
+            self.driver
+                .write(&temp_buf[..drained])
+                .map_err(|_| ConsoleError::Transport)?;
+
+            total_written += drained;
+        }
+
+        Ok(total_written)
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+impl EspUartBufferedConsole {
+    /// Returns not ready on host targets.
+    pub fn new_default() -> Result<Self, ConsoleError> {
+        Err(ConsoleError::NotReady)
+    }
+
+    /// Returns not ready on host targets.
+    pub fn pull_rx_into(
+        &mut self,
+        _buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        Err(ConsoleError::NotReady)
+    }
+
+    /// Returns not ready on host targets.
+    pub fn flush_tx_from(
+        &mut self,
+        _buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        Err(ConsoleError::NotReady)
     }
 }
 
@@ -510,5 +619,39 @@ mod tests {
         sink.clear_last_response();
 
         assert_eq!(sink.last_response(), None);
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn esp_uart_buffered_console_new_default_returns_not_ready_on_host() {
+        use super::EspUartBufferedConsole;
+        assert_eq!(
+            EspUartBufferedConsole::new_default().err(),
+            Some(ConsoleError::NotReady)
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn esp_uart_buffered_console_pull_rx_into_returns_not_ready_on_host() {
+        use super::EspUartBufferedConsole;
+        let mut console = EspUartBufferedConsole;
+        let mut buffer = FramedConsoleBuffer::new();
+        assert_eq!(
+            console.pull_rx_into(&mut buffer).err(),
+            Some(ConsoleError::NotReady)
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn esp_uart_buffered_console_flush_tx_from_returns_not_ready_on_host() {
+        use super::EspUartBufferedConsole;
+        let mut console = EspUartBufferedConsole;
+        let mut buffer = FramedConsoleBuffer::new();
+        assert_eq!(
+            console.flush_tx_from(&mut buffer).err(),
+            Some(ConsoleError::NotReady)
+        );
     }
 }

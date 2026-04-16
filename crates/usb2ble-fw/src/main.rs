@@ -384,6 +384,71 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
     })
 }
 
+#[cfg(target_os = "espidf")]
+fn run_embedded_uart_console_smoke() -> ! {
+    use usb2ble_platform_espidf::ble_hid::BleConnectionState;
+    use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
+    use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
+
+    let mut profile_store = match EspNvsProfileStore::new() {
+        Ok(store) => store,
+        Err(e) => {
+            println!("failed to open profile store: {:?}", e);
+            panic!("fatal store error");
+        }
+    };
+
+    let mut bond_store = match EspNvsBondStore::new() {
+        Ok(store) => store,
+        Err(e) => {
+            println!("failed to open bond store: {:?}", e);
+            panic!("fatal store error");
+        }
+    };
+
+    let mut uart_console = match EspUartBufferedConsole::new_default() {
+        Ok(console) => console,
+        Err(e) => {
+            println!("failed to open UART console: {:?}", e);
+            panic!("fatal console error");
+        }
+    };
+
+    let mut app = App::bootstrap(&profile_store);
+    let mut console_buffer = FramedConsoleBuffer::new();
+    let ble_state = BleConnectionState::Idle;
+
+    let active_profile = app.runtime().active_profile();
+    let output_persona = active_profile.output_persona();
+    let bonds_present = bond_store.bonds_present();
+
+    println!("== usb2ble firmware starting ==");
+    println!("firmware: {}", app::APP_NAME);
+    println!("profile: {}", active_profile.as_str());
+    println!("persona: {}", output_persona.as_str());
+    println!("bonds: {}", if bonds_present { "present" } else { "none" });
+    println!("UART console is ready for commands");
+
+    loop {
+        // Pull RX bytes from UART into the buffer
+        let _ = uart_console.pull_rx_into(&mut console_buffer);
+
+        // Service at most one buffered console command
+        let _ = app.service_console_buffer_once(
+            &mut console_buffer,
+            &mut profile_store,
+            &mut bond_store,
+            ble_state,
+        );
+
+        // Flush queued TX bytes back to UART
+        let _ = uart_console.flush_tx_from(&mut console_buffer);
+
+        // Small yield
+        std::thread::yield_now();
+    }
+}
+
 fn main() {
     usb2ble_platform_espidf::link_patches_if_needed();
 
@@ -538,21 +603,29 @@ fn main() {
         return;
     }
 
-    let bootstrap_result = app::bootstrap_default();
+    #[cfg(target_os = "espidf")]
+    {
+        run_embedded_uart_console_smoke();
+    }
 
-    match bootstrap_result {
-        Ok(app_instance) => {
-            println!(
-                "bootstrap: app={}, core={}, proto={}, platform={}, profile={}",
-                app::APP_NAME,
-                usb2ble_core::CORE_CRATE_NAME,
-                usb2ble_proto::PROTO_CRATE_NAME,
-                usb2ble_platform_espidf::PLATFORM_CRATE_NAME,
-                app_instance.runtime().active_profile().as_str()
-            );
-        }
-        Err(error) => {
-            println!("bootstrap failed: {:?}", error);
+    #[cfg(not(target_os = "espidf"))]
+    {
+        let bootstrap_result = app::bootstrap_default();
+
+        match bootstrap_result {
+            Ok(app_instance) => {
+                println!(
+                    "bootstrap: app={}, core={}, proto={}, platform={}, profile={}",
+                    app::APP_NAME,
+                    usb2ble_core::CORE_CRATE_NAME,
+                    usb2ble_proto::PROTO_CRATE_NAME,
+                    usb2ble_platform_espidf::PLATFORM_CRATE_NAME,
+                    app_instance.runtime().active_profile().as_str()
+                );
+            }
+            Err(error) => {
+                println!("bootstrap failed: {:?}", error);
+            }
         }
     }
 }
