@@ -46,19 +46,21 @@ enum HostToolError {
     UnexpectedDemoOutcome(&'static str, app::BufferedPersonaAppPumpOutcome),
 }
 
+#[cfg(any(target_os = "espidf", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmbeddedSmokeError {
-    ProfileStoreOpen(usb2ble_platform_espidf::nvs_store::StoreError),
-    BondStoreOpen(usb2ble_platform_espidf::nvs_store::StoreError),
-    ConsoleOpen(usb2ble_platform_espidf::console_uart::ConsoleError),
+    ProfileStore(usb2ble_platform_espidf::nvs_store::StoreError),
+    BondStore(usb2ble_platform_espidf::nvs_store::StoreError),
+    Console(usb2ble_platform_espidf::console_uart::ConsoleError),
 }
 
+#[cfg(any(target_os = "espidf", test))]
 impl std::fmt::Display for EmbeddedSmokeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ProfileStoreOpen(e) => write!(f, "failed to open profile store: {:?}", e),
-            Self::BondStoreOpen(e) => write!(f, "failed to open bond store: {:?}", e),
-            Self::ConsoleOpen(e) => write!(f, "failed to open console: {:?}", e),
+            Self::ProfileStore(e) => write!(f, "failed to open profile store: {:?}", e),
+            Self::BondStore(e) => write!(f, "failed to open bond store: {:?}", e),
+            Self::Console(e) => write!(f, "failed to open console: {:?}", e),
         }
     }
 }
@@ -407,11 +409,10 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
     use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
     use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
 
-    let mut profile_store =
-        EspNvsProfileStore::new().map_err(EmbeddedSmokeError::ProfileStoreOpen)?;
-    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedSmokeError::BondStoreOpen)?;
+    let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedSmokeError::ProfileStore)?;
+    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedSmokeError::BondStore)?;
     let mut uart_console =
-        EspUartBufferedConsole::new_default().map_err(EmbeddedSmokeError::ConsoleOpen)?;
+        EspUartBufferedConsole::new_default().map_err(EmbeddedSmokeError::Console)?;
 
     let mut app = App::bootstrap(&profile_store);
     let mut console_buffer = FramedConsoleBuffer::new();
@@ -998,9 +999,9 @@ mod host_demo_tests {
         use usb2ble_platform_espidf::console_uart::ConsoleError;
         use usb2ble_platform_espidf::nvs_store::StoreError;
 
-        let profile_err = EmbeddedSmokeError::ProfileStoreOpen(StoreError::BackendFailure);
-        let bond_err = EmbeddedSmokeError::BondStoreOpen(StoreError::BackendFailure);
-        let console_err = EmbeddedSmokeError::ConsoleOpen(ConsoleError::Transport);
+        let profile_err = EmbeddedSmokeError::ProfileStore(StoreError::BackendFailure);
+        let bond_err = EmbeddedSmokeError::BondStore(StoreError::BackendFailure);
+        let console_err = EmbeddedSmokeError::Console(ConsoleError::Transport);
 
         assert_eq!(
             format!("{}", profile_err),
