@@ -135,9 +135,10 @@ pub enum UsbHostError {
     Transport,
 }
 
-/// Internal state for the USB host ingress used in callbacks.
+/// Internal staging area for USB host events received in callbacks.
 #[cfg(target_os = "espidf")]
-struct IngressState {
+struct IngressStaging {
+    /// Raw events detected by host client or transfer callbacks.
     events: std::collections::VecDeque<UsbEvent>,
 }
 
@@ -145,7 +146,11 @@ struct IngressState {
 #[cfg(target_os = "espidf")]
 pub struct EspUsbHostIngress {
     client_hdl: esp_idf_sys::usb_host_client_handle_t,
-    state: Box<IngressState>,
+    /// Staging area shared with C callbacks via raw pointer.
+    staging: Box<IngressStaging>,
+    /// Enriched and final events ready for the application to consume.
+    final_events: std::collections::VecDeque<UsbEvent>,
+    /// Tracked device handles for descriptor access and closing.
     devices: std::collections::HashMap<u8, esp_idf_sys::usb_host_device_handle_t>,
 }
 
@@ -157,10 +162,10 @@ pub struct EspUsbHostIngress;
 impl EspUsbHostIngress {
     /// Initializes the USB host stack and registers a single client.
     pub fn new_single_client() -> Result<Self, UsbHostError> {
-        let state = Box::new(IngressState {
+        let staging = Box::new(IngressStaging {
             events: std::collections::VecDeque::new(),
         });
-        let state_ptr = Box::into_raw(state);
+        let staging_ptr = Box::into_raw(staging);
 
         // SAFETY: USB host installation and client registration are standard ESP-IDF calls.
         unsafe {
@@ -173,7 +178,7 @@ impl EspUsbHostIngress {
 
             let res = esp_idf_sys::usb_host_install(&config);
             if res != esp_idf_sys::ESP_OK {
-                let _ = Box::from_raw(state_ptr);
+                let _ = Box::from_raw(staging_ptr);
                 // If already installed, we might want to continue, but for smoke test we expect clean start.
                 return Err(UsbHostError::Install);
             }
@@ -182,19 +187,20 @@ impl EspUsbHostIngress {
                 is_within_static_size: false,
                 max_num_event_msg: 5,
                 client_event_callback: Some(client_event_cb),
-                callback_arg: state_ptr as *mut _,
+                callback_arg: staging_ptr as *mut _,
             };
 
             let mut client_hdl: esp_idf_sys::usb_host_client_handle_t = std::ptr::null_mut();
             let res = esp_idf_sys::usb_host_client_register(&client_config, &mut client_hdl);
             if res != esp_idf_sys::ESP_OK {
-                let _ = Box::from_raw(state_ptr);
+                let _ = Box::from_raw(staging_ptr);
                 return Err(UsbHostError::ClientRegister);
             }
 
             Ok(Self {
                 client_hdl,
-                state: Box::from_raw(state_ptr),
+                staging: Box::from_raw(staging_ptr),
+                final_events: std::collections::VecDeque::new(),
                 devices: std::collections::HashMap::new(),
             })
         }
@@ -208,19 +214,25 @@ impl EspUsbHostIngress {
         unsafe {
             // Handle library events
             let res = esp_idf_sys::usb_host_lib_handle_events(0);
+            if res != esp_idf_sys::ESP_OK && res != esp_idf_sys::ESP_ERR_TIMEOUT {
+                return Err(UsbHostError::Transport);
+            }
             if res == esp_idf_sys::ESP_OK {
                 work_done += 1;
             }
 
             // Handle client events
             let res = esp_idf_sys::usb_host_client_handle_events(self.client_hdl, 0);
+            if res != esp_idf_sys::ESP_OK && res != esp_idf_sys::ESP_ERR_TIMEOUT {
+                return Err(UsbHostError::Transport);
+            }
             if res == esp_idf_sys::ESP_OK {
                 work_done += 1;
             }
         }
 
-        // Pull any events from the owned state populated by callbacks
-        while let Some(event) = self.state.events.pop_front() {
+        // Pull raw events from the shared staging area populated by callbacks
+        while let Some(event) = self.staging.events.pop_front() {
             match event {
                 UsbEvent::DeviceAttached(meta) => {
                     let address = meta.device_id.raw();
@@ -248,8 +260,7 @@ impl EspUsbHostIngress {
                         };
 
                         self.devices.insert(address, dev_hdl);
-                        self.state
-                            .events
+                        self.final_events
                             .push_back(UsbEvent::DeviceAttached(enriched_meta));
 
                         // Attempt to fetch HID report descriptor
@@ -258,7 +269,8 @@ impl EspUsbHostIngress {
                             let _ = self.request_hid_descriptor(dev_hdl);
                         }
                     } else {
-                        self.state.events.push_back(UsbEvent::DeviceAttached(meta));
+                        // If open fails, we can still report the basic attach
+                        self.final_events.push_back(UsbEvent::DeviceAttached(meta));
                     }
                 }
                 UsbEvent::DeviceDetached(id) => {
@@ -269,15 +281,18 @@ impl EspUsbHostIngress {
                             let _ = esp_idf_sys::usb_host_device_close(self.client_hdl, dev_hdl);
                         }
                     }
-                    self.state.events.push_back(UsbEvent::DeviceDetached(id));
+                    self.final_events.push_back(UsbEvent::DeviceDetached(id));
+                }
+                UsbEvent::ReportDescriptorReceived { .. } => {
+                    // Staging events from transfer_cb are already final shape
+                    self.final_events.push_back(event);
                 }
                 _ => {
-                    self.state.events.push_back(event);
+                    // Ignore other raw staging events for now
                 }
             }
             work_done += 1;
-            if work_done >= 10 {
-                // Guard against infinite loop if callbacks keep pushing
+            if work_done >= 20 {
                 break;
             }
         }
@@ -360,8 +375,8 @@ impl EspUsbHostIngress {
 
         (*transfer).device_handle = dev_hdl;
         (*transfer).callback = Some(transfer_cb);
-        // Pass the state pointer as context
-        (*transfer).context = &mut *self.state as *mut IngressState as *mut _;
+        // Pass the staging state pointer as context
+        (*transfer).context = &mut *self.staging as *mut IngressStaging as *mut _;
         (*transfer).bEndpointAddress = 0x00; // Control pipe
         (*transfer).num_bytes = 8 + report_desc_len as i32;
 
@@ -383,24 +398,25 @@ impl EspUsbHostIngress {
 }
 
 #[cfg(target_os = "espidf")]
-#[cfg(target_os = "espidf")]
 unsafe extern "C" fn client_event_cb(
     event_msg: *const esp_idf_sys::usb_host_client_event_msg_t,
     arg: *mut std::ffi::c_void,
 ) {
-    let state = &mut *(arg as *mut IngressState);
+    let staging = &mut *(arg as *mut IngressStaging);
     let msg = *event_msg;
 
     match msg.event {
         esp_idf_sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_NEW_DEV => {
-            state.events.push_back(UsbEvent::DeviceAttached(DeviceMeta {
-                device_id: UsbDeviceId::new(msg.new_dev.address),
-                vendor_id: 0,
-                product_id: 0,
-            }));
+            staging
+                .events
+                .push_back(UsbEvent::DeviceAttached(DeviceMeta {
+                    device_id: UsbDeviceId::new(msg.new_dev.address),
+                    vendor_id: 0,
+                    product_id: 0,
+                }));
         }
         esp_idf_sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_DEV_GONE => {
-            state
+            staging
                 .events
                 .push_back(UsbEvent::DeviceDetached(UsbDeviceId::new(
                     msg.dev_gone.address,
@@ -412,18 +428,20 @@ unsafe extern "C" fn client_event_cb(
 
 #[cfg(target_os = "espidf")]
 unsafe extern "C" fn transfer_cb(transfer: *mut esp_idf_sys::usb_transfer_t) {
-    let state = &mut *((*transfer).context as *mut IngressState);
+    let staging = &mut *((*transfer).context as *mut IngressStaging);
 
     let (data, len) = extract_report_descriptor(transfer);
     if len > 0 {
         let mut address: u8 = 0;
         let _ = esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
 
-        state.events.push_back(UsbEvent::ReportDescriptorReceived {
-            device_id: UsbDeviceId::new(address),
-            bytes: data,
-            len,
-        });
+        staging
+            .events
+            .push_back(UsbEvent::ReportDescriptorReceived {
+                device_id: UsbDeviceId::new(address),
+                bytes: data,
+                len,
+            });
     }
 
     let _ = esp_idf_sys::usb_host_transfer_free(transfer);
@@ -451,7 +469,7 @@ unsafe fn extract_report_descriptor(
 #[cfg(target_os = "espidf")]
 impl UsbIngress for EspUsbHostIngress {
     fn poll_event(&mut self) -> Option<UsbEvent> {
-        self.events.pop_front()
+        self.final_events.pop_front()
     }
 }
 
