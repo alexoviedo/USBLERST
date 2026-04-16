@@ -135,11 +135,17 @@ pub enum UsbHostError {
     Transport,
 }
 
+/// Internal state for the USB host ingress used in callbacks.
+#[cfg(target_os = "espidf")]
+struct IngressState {
+    events: std::collections::VecDeque<UsbEvent>,
+}
+
 /// ESP-IDF-backed USB host ingress for embedded builds.
 #[cfg(target_os = "espidf")]
 pub struct EspUsbHostIngress {
     client_hdl: esp_idf_sys::usb_host_client_handle_t,
-    events: std::collections::VecDeque<UsbEvent>,
+    state: Box<IngressState>,
     devices: std::collections::HashMap<u8, esp_idf_sys::usb_host_device_handle_t>,
 }
 
@@ -151,6 +157,11 @@ pub struct EspUsbHostIngress;
 impl EspUsbHostIngress {
     /// Initializes the USB host stack and registers a single client.
     pub fn new_single_client() -> Result<Self, UsbHostError> {
+        let state = Box::new(IngressState {
+            events: std::collections::VecDeque::new(),
+        });
+        let state_ptr = Box::into_raw(state);
+
         // SAFETY: USB host installation and client registration are standard ESP-IDF calls.
         unsafe {
             let config = esp_idf_sys::usb_host_config_t {
@@ -162,6 +173,7 @@ impl EspUsbHostIngress {
 
             let res = esp_idf_sys::usb_host_install(&config);
             if res != esp_idf_sys::ESP_OK {
+                let _ = Box::from_raw(state_ptr);
                 // If already installed, we might want to continue, but for smoke test we expect clean start.
                 return Err(UsbHostError::Install);
             }
@@ -170,24 +182,19 @@ impl EspUsbHostIngress {
                 is_within_static_size: false,
                 max_num_event_msg: 5,
                 client_event_callback: Some(client_event_cb),
-                callback_arg: std::ptr::null_mut(),
+                callback_arg: state_ptr as *mut _,
             };
 
             let mut client_hdl: esp_idf_sys::usb_host_client_handle_t = std::ptr::null_mut();
             let res = esp_idf_sys::usb_host_client_register(&client_config, &mut client_hdl);
             if res != esp_idf_sys::ESP_OK {
+                let _ = Box::from_raw(state_ptr);
                 return Err(UsbHostError::ClientRegister);
             }
 
-            // Store the handle in a way the callback can access it if needed,
-            // or just rely on the fact that we have one global client for now.
-            // For this smoke test, we'll use a static to pass events to the instance.
-            // This is NOT ideal for production but acceptable for a "first hardware signal" smoke path.
-            GLOBAL_INGRESS_QUEUE = Some(std::collections::VecDeque::new());
-
             Ok(Self {
                 client_hdl,
-                events: std::collections::VecDeque::new(),
+                state: Box::from_raw(state_ptr),
                 devices: std::collections::HashMap::new(),
             })
         }
@@ -212,60 +219,66 @@ impl EspUsbHostIngress {
             }
         }
 
-        // Pull any events from the global queue populated by the callback
-        unsafe {
-            if let Some(ref mut queue) = GLOBAL_INGRESS_QUEUE {
-                while let Some(event) = queue.pop_front() {
-                    match event {
-                        UsbEvent::DeviceAttached(meta) => {
-                            let address = meta.device_id.raw();
-                            let mut dev_hdl: esp_idf_sys::usb_host_device_handle_t =
-                                std::ptr::null_mut();
+        // Pull any events from the owned state populated by callbacks
+        while let Some(event) = self.state.events.pop_front() {
+            match event {
+                UsbEvent::DeviceAttached(meta) => {
+                    let address = meta.device_id.raw();
+                    let mut dev_hdl: esp_idf_sys::usb_host_device_handle_t = std::ptr::null_mut();
 
-                            let res = esp_idf_sys::usb_host_device_open(
-                                self.client_hdl,
-                                address as u8,
-                                &mut dev_hdl,
-                            );
+                    // SAFETY: standard ESP-IDF USB host device open
+                    let res = unsafe {
+                        esp_idf_sys::usb_host_device_open(self.client_hdl, address, &mut dev_hdl)
+                    };
 
-                            if res == esp_idf_sys::ESP_OK {
-                                let mut dev_info = esp_idf_sys::usb_device_info_t::default();
-                                let res = esp_idf_sys::usb_host_device_info(dev_hdl, &mut dev_info);
+                    if res == esp_idf_sys::ESP_OK {
+                        let mut dev_info = esp_idf_sys::usb_device_info_t::default();
+                        // SAFETY: standard ESP-IDF USB host device info
+                        let res =
+                            unsafe { esp_idf_sys::usb_host_device_info(dev_hdl, &mut dev_info) };
 
-                                let enriched_meta = if res == esp_idf_sys::ESP_OK {
-                                    DeviceMeta {
-                                        device_id: meta.device_id,
-                                        vendor_id: dev_info.vendor_id,
-                                        product_id: dev_info.product_id,
-                                    }
-                                } else {
-                                    meta
-                                };
-
-                                self.devices.insert(address, dev_hdl);
-                                self.events
-                                    .push_back(UsbEvent::DeviceAttached(enriched_meta));
-
-                                // Attempt to fetch HID report descriptor
-                                let _ = self.request_hid_descriptor(address, dev_hdl);
-                            } else {
-                                self.events.push_back(UsbEvent::DeviceAttached(meta));
+                        let enriched_meta = if res == esp_idf_sys::ESP_OK {
+                            DeviceMeta {
+                                device_id: meta.device_id,
+                                vendor_id: dev_info.vendor_id,
+                                product_id: dev_info.product_id,
                             }
+                        } else {
+                            meta
+                        };
+
+                        self.devices.insert(address, dev_hdl);
+                        self.state
+                            .events
+                            .push_back(UsbEvent::DeviceAttached(enriched_meta));
+
+                        // Attempt to fetch HID report descriptor
+                        // SAFETY: searching descriptors and submitting transfers
+                        unsafe {
+                            let _ = self.request_hid_descriptor(dev_hdl);
                         }
-                        UsbEvent::DeviceDetached(id) => {
-                            let address = id.raw();
-                            if let Some(dev_hdl) = self.devices.remove(&address) {
-                                let _ =
-                                    esp_idf_sys::usb_host_device_close(self.client_hdl, dev_hdl);
-                            }
-                            self.events.push_back(UsbEvent::DeviceDetached(id));
-                        }
-                        _ => {
-                            self.events.push_back(event);
+                    } else {
+                        self.state.events.push_back(UsbEvent::DeviceAttached(meta));
+                    }
+                }
+                UsbEvent::DeviceDetached(id) => {
+                    let address = id.raw();
+                    if let Some(dev_hdl) = self.devices.remove(&address) {
+                        // SAFETY: standard ESP-IDF USB host device close
+                        unsafe {
+                            let _ = esp_idf_sys::usb_host_device_close(self.client_hdl, dev_hdl);
                         }
                     }
-                    work_done += 1;
+                    self.state.events.push_back(UsbEvent::DeviceDetached(id));
                 }
+                _ => {
+                    self.state.events.push_back(event);
+                }
+            }
+            work_done += 1;
+            if work_done >= 10 {
+                // Guard against infinite loop if callbacks keep pushing
+                break;
             }
         }
 
@@ -274,7 +287,6 @@ impl EspUsbHostIngress {
 
     unsafe fn request_hid_descriptor(
         &mut self,
-        _address: u8,
         dev_hdl: esp_idf_sys::usb_host_device_handle_t,
     ) -> Result<(), UsbHostError> {
         let mut config_desc: *const esp_idf_sys::usb_config_desc_t = std::ptr::null();
@@ -298,6 +310,7 @@ impl EspUsbHostIngress {
                 // Interface descriptor
                 let iface_desc = desc as *const esp_idf_sys::usb_intf_desc_t;
                 if (*iface_desc).bInterfaceClass == 0x03 {
+                    let interface_number = (*iface_desc).bInterfaceNumber;
                     // HID Interface found. Search for HID descriptor following it.
                     let mut hid_offset = offset + b_length;
                     while hid_offset < total_len {
@@ -305,19 +318,19 @@ impl EspUsbHostIngress {
                             as *const esp_idf_sys::usb_standard_desc_t;
                         if (*h_desc).bDescriptorType == 0x21 {
                             // HID Descriptor
-                            // In ESP-IDF/USB, the report descriptor length is in the HID descriptor.
-                            // The HID descriptor has variable length depending on bNumDescriptors.
                             // Byte 7 and 8 are the length of the first report descriptor.
                             let h_ptr = h_desc as *const u8;
                             let report_desc_len =
                                 (*h_ptr.add(7) as u16) | ((*h_ptr.add(8) as u16) << 8);
 
-                            return self
-                                .submit_report_descriptor_transfer(dev_hdl, report_desc_len);
+                            return self.submit_report_descriptor_transfer(
+                                dev_hdl,
+                                interface_number,
+                                report_desc_len,
+                            );
                         } else if (*h_desc).bDescriptorType == 0x04
                             || (*h_desc).bDescriptorType == 0x05
                         {
-                            // Next interface or endpoint, stop searching for HID desc in this iface
                             break;
                         }
                         hid_offset += (*h_desc).bLength as usize;
@@ -333,10 +346,13 @@ impl EspUsbHostIngress {
     unsafe fn submit_report_descriptor_transfer(
         &mut self,
         dev_hdl: esp_idf_sys::usb_host_device_handle_t,
+        interface_number: u8,
         report_desc_len: u16,
     ) -> Result<(), UsbHostError> {
         let mut transfer: *mut esp_idf_sys::usb_transfer_t = std::ptr::null_mut();
-        let res = esp_idf_sys::usb_host_transfer_alloc(report_desc_len as usize, 0, &mut transfer);
+        // Allocate space for setup (8 bytes) + data
+        let res =
+            esp_idf_sys::usb_host_transfer_alloc(8 + report_desc_len as usize, 0, &mut transfer);
 
         if res != esp_idf_sys::ESP_OK {
             return Err(UsbHostError::Transfer);
@@ -344,15 +360,16 @@ impl EspUsbHostIngress {
 
         (*transfer).device_handle = dev_hdl;
         (*transfer).callback = Some(transfer_cb);
-        (*transfer).context = std::ptr::null_mut(); // We could pass Self but need careful lifetime
+        // Pass the state pointer as context
+        (*transfer).context = &mut *self.state as *mut IngressState as *mut _;
         (*transfer).bEndpointAddress = 0x00; // Control pipe
-        (*transfer).num_bytes = report_desc_len as i32;
+        (*transfer).num_bytes = 8 + report_desc_len as i32;
 
         let setup_ptr = (*transfer).data_buffer as *mut esp_idf_sys::usb_setup_t;
         (*setup_ptr).bmRequestType = 0x81; // Device to Host, Standard, Interface
         (*setup_ptr).bRequest = 0x06; // GET_DESCRIPTOR
-        (*setup_ptr).wValue = 0x2200; // Report Descriptor
-        (*setup_ptr).wIndex = 0x0000; // Interface 0
+        (*setup_ptr).wValue = 0x2200; // Report Descriptor (0x22 is HID Report)
+        (*setup_ptr).wIndex = interface_number as u16;
         (*setup_ptr).wLength = report_desc_len;
 
         let res = esp_idf_sys::usb_host_transfer_submit(transfer);
@@ -366,33 +383,28 @@ impl EspUsbHostIngress {
 }
 
 #[cfg(target_os = "espidf")]
-static mut GLOBAL_INGRESS_QUEUE: Option<std::collections::VecDeque<UsbEvent>> = None;
-
 #[cfg(target_os = "espidf")]
 unsafe extern "C" fn client_event_cb(
     event_msg: *const esp_idf_sys::usb_host_client_event_msg_t,
-    _arg: *mut std::ffi::c_void,
+    arg: *mut std::ffi::c_void,
 ) {
+    let state = &mut *(arg as *mut IngressState);
     let msg = *event_msg;
+
     match msg.event {
         esp_idf_sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_NEW_DEV => {
-            // We need to open the device to get VID/PID.
-            // For this smoke test, we'll just signal attachment with 0s if we can't easily get VID/PID
-            // without full device opening logic.
-            if let Some(ref mut queue) = GLOBAL_INGRESS_QUEUE {
-                queue.push_back(UsbEvent::DeviceAttached(DeviceMeta {
-                    device_id: UsbDeviceId::new(msg.new_dev.address),
-                    vendor_id: 0,
-                    product_id: 0,
-                }));
-            }
+            state.events.push_back(UsbEvent::DeviceAttached(DeviceMeta {
+                device_id: UsbDeviceId::new(msg.new_dev.address),
+                vendor_id: 0,
+                product_id: 0,
+            }));
         }
         esp_idf_sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_DEV_GONE => {
-            if let Some(ref mut queue) = GLOBAL_INGRESS_QUEUE {
-                queue.push_back(UsbEvent::DeviceDetached(UsbDeviceId::new(
+            state
+                .events
+                .push_back(UsbEvent::DeviceDetached(UsbDeviceId::new(
                     msg.dev_gone.address,
                 )));
-            }
         }
         _ => {}
     }
@@ -400,33 +412,40 @@ unsafe extern "C" fn client_event_cb(
 
 #[cfg(target_os = "espidf")]
 unsafe extern "C" fn transfer_cb(transfer: *mut esp_idf_sys::usb_transfer_t) {
-    let mut data = [0_u8; 64];
-    let actual_len = (*transfer).actual_num_bytes as usize;
-    let copy_len = actual_len.min(64);
+    let state = &mut *((*transfer).context as *mut IngressState);
 
-    // Skip the 8-byte setup packet if it's a control transfer result
-    // (though in some ESP-IDF versions the buffer might start after setup)
-    // Actually for GET_DESCRIPTOR report, the data buffer contains the descriptor.
-    // In ESP-IDF usb_host, the data_buffer of a control transfer contains:
-    // [setup (8 bytes)] [data (...)]
-    if actual_len >= 8 {
-        let data_ptr = (*transfer).data_buffer.add(8);
-        let data_len = (actual_len - 8).min(64);
-        std::ptr::copy_nonoverlapping(data_ptr, data.as_mut_ptr(), data_len);
+    let (data, len) = extract_report_descriptor(transfer);
+    if len > 0 {
+        let mut address: u8 = 0;
+        let _ = esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
 
-        if let Some(ref mut queue) = GLOBAL_INGRESS_QUEUE {
-            let mut address: u8 = 0;
-            let _ = esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
-
-            queue.push_back(UsbEvent::ReportDescriptorReceived {
-                device_id: UsbDeviceId::new(address),
-                bytes: data,
-                len: data_len,
-            });
-        }
+        state.events.push_back(UsbEvent::ReportDescriptorReceived {
+            device_id: UsbDeviceId::new(address),
+            bytes: data,
+            len,
+        });
     }
 
     let _ = esp_idf_sys::usb_host_transfer_free(transfer);
+}
+
+#[cfg(target_os = "espidf")]
+unsafe fn extract_report_descriptor(
+    transfer: *mut esp_idf_sys::usb_transfer_t,
+) -> ([u8; 64], usize) {
+    let mut data = [0_u8; 64];
+    let actual_len = (*transfer).actual_num_bytes as usize;
+
+    // In ESP-IDF usb_host, the data_buffer of a control transfer contains:
+    // [setup (8 bytes)] [data (...)]
+    if actual_len > 8 {
+        let data_ptr = (*transfer).data_buffer.add(8);
+        let data_len = (actual_len - 8).min(64);
+        std::ptr::copy_nonoverlapping(data_ptr, data.as_mut_ptr(), data_len);
+        (data, data_len)
+    } else {
+        (data, 0)
+    }
 }
 
 #[cfg(target_os = "espidf")]
