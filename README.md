@@ -30,9 +30,9 @@ This demonstrates the end-to-end app pipeline from boot through console commands
 
 ## Hardware Smoke Path
 
-For ESP-IDF targets, the firmware includes a UART console smoke path. This allows developers to interact with the runtime state and NVS storage on real hardware before the BLE and USB transports are fully implemented.
+For ESP-IDF targets, the firmware includes a hardware smoke path accessible via the board's default configured console. This allows developers to interact with the runtime state and NVS storage on real hardware before the BLE and USB transports are fully implemented.
 
-After flashing, you can interact with the firmware over UART using the internal protocol commands (newline-terminated).
+After flashing, you can interact with the firmware over the default serial console using the internal protocol commands (newline-terminated).
 
 ### Example Commands
 

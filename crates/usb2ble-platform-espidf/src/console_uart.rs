@@ -1,9 +1,7 @@
 #[cfg(target_os = "espidf")]
-use esp_idf_svc::hal::gpio;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::hal::prelude::*;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::hal::uart;
+use esp_idf_sys::{
+    self, fcntl, read, write, EAGAIN, F_GETFL, F_SETFL, O_NONBLOCK, STDIN_FILENO, STDOUT_FILENO,
+};
 
 /// Fixed-capacity RX buffer size for framed console bytes.
 pub const RX_BUFFER_CAPACITY: usize = 128;
@@ -75,9 +73,7 @@ impl Default for FramedConsoleBuffer {
 
 /// ESP-IDF-backed UART console transport for embedded builds.
 #[cfg(target_os = "espidf")]
-pub struct EspUartBufferedConsole {
-    driver: uart::UartDriver<'static>,
-}
+pub struct EspUartBufferedConsole;
 
 /// Host stub for the ESP-IDF-backed UART console transport.
 #[cfg(not(target_os = "espidf"))]
@@ -85,48 +81,53 @@ pub struct EspUartBufferedConsole;
 
 #[cfg(target_os = "espidf")]
 impl EspUartBufferedConsole {
-    /// Creates a UART transport using default UART0 settings.
+    /// Creates a UART transport using the board's default VFS console.
     pub fn new_default() -> Result<Self, ConsoleError> {
-        let peripherals = Peripherals::take().map_err(|_| ConsoleError::Transport)?;
-        let config = uart::config::Config::new().baudrate(115_200.into());
+        // SAFETY: fcntl is a standard ESP-IDF system call.
+        // We set STDIN to non-blocking so pull_rx_into does not stall.
+        unsafe {
+            let flags = fcntl(STDIN_FILENO, F_GETFL);
+            if flags == -1 {
+                return Err(ConsoleError::Transport);
+            }
+            if fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK as i32) == -1 {
+                return Err(ConsoleError::Transport);
+            }
+        }
 
-        // Use the default console UART path (UART0) with HAL defaults
-        let driver = uart::UartDriver::new(
-            peripherals.uart0,
-            peripherals.pins.gpio43,
-            peripherals.pins.gpio44,
-            Option::<gpio::Gpio0>::None,
-            Option::<gpio::Gpio0>::None,
-            &config,
-        )
-        .map_err(|_| ConsoleError::Transport)?;
-
-        Ok(Self { driver })
+        Ok(Self)
     }
 
-    /// Pulls RX bytes from UART into the provided framed buffer.
+    /// Pulls RX bytes from the default console into the provided framed buffer.
     pub fn pull_rx_into(
         &mut self,
         buffer: &mut FramedConsoleBuffer,
     ) -> Result<usize, ConsoleError> {
         let mut temp_buf = [0_u8; 64];
 
-        // Non-blocking read
-        let len = self
-            .driver
-            .read(&mut temp_buf, 0)
-            .map_err(|_| ConsoleError::Transport)?;
+        // SAFETY: read from STDIN_FILENO is safe on ESP-IDF when using standard VFS.
+        let bytes_read = unsafe { read(STDIN_FILENO, temp_buf.as_mut_ptr() as *mut _, 64) };
 
-        if len > 0 {
+        if bytes_read > 0 {
+            let len = bytes_read as usize;
             buffer
                 .push_rx_bytes(&temp_buf[..len])
                 .map_err(|_| ConsoleError::Transport)?;
+            Ok(len)
+        } else if bytes_read == 0 {
+            Ok(0)
+        } else {
+            // SAFETY: Checking errno is safe after a failed system call.
+            let err = unsafe { *esp_idf_sys::__errno() };
+            if err == EAGAIN as i32 {
+                Ok(0)
+            } else {
+                Err(ConsoleError::Transport)
+            }
         }
-
-        Ok(len)
     }
 
-    /// Flushes queued TX bytes from the framed buffer back to UART.
+    /// Flushes queued TX bytes from the framed buffer back to the default console.
     pub fn flush_tx_from(
         &mut self,
         buffer: &mut FramedConsoleBuffer,
@@ -140,11 +141,15 @@ impl EspUartBufferedConsole {
                 break;
             }
 
-            self.driver
-                .write(&temp_buf[..drained])
-                .map_err(|_| ConsoleError::Transport)?;
+            // SAFETY: write to STDOUT_FILENO is safe on ESP-IDF when using standard VFS.
+            let written =
+                unsafe { write(STDOUT_FILENO, temp_buf.as_ptr() as *const _, drained as u32) };
 
-            total_written += drained;
+            if written < 0 {
+                return Err(ConsoleError::Transport);
+            }
+
+            total_written += written as usize;
         }
 
         Ok(total_written)

@@ -46,6 +46,23 @@ enum HostToolError {
     UnexpectedDemoOutcome(&'static str, app::BufferedPersonaAppPumpOutcome),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmbeddedSmokeError {
+    ProfileStoreOpen(usb2ble_platform_espidf::nvs_store::StoreError),
+    BondStoreOpen(usb2ble_platform_espidf::nvs_store::StoreError),
+    ConsoleOpen(usb2ble_platform_espidf::console_uart::ConsoleError),
+}
+
+impl std::fmt::Display for EmbeddedSmokeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProfileStoreOpen(e) => write!(f, "failed to open profile store: {:?}", e),
+            Self::BondStoreOpen(e) => write!(f, "failed to open bond store: {:?}", e),
+            Self::ConsoleOpen(e) => write!(f, "failed to open console: {:?}", e),
+        }
+    }
+}
+
 impl std::fmt::Display for HostToolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -385,34 +402,16 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
 }
 
 #[cfg(target_os = "espidf")]
-fn run_embedded_uart_console_smoke() -> ! {
+fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
     use usb2ble_platform_espidf::ble_hid::BleConnectionState;
     use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
     use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
 
-    let mut profile_store = match EspNvsProfileStore::new() {
-        Ok(store) => store,
-        Err(e) => {
-            println!("failed to open profile store: {:?}", e);
-            panic!("fatal store error");
-        }
-    };
-
-    let mut bond_store = match EspNvsBondStore::new() {
-        Ok(store) => store,
-        Err(e) => {
-            println!("failed to open bond store: {:?}", e);
-            panic!("fatal store error");
-        }
-    };
-
-    let mut uart_console = match EspUartBufferedConsole::new_default() {
-        Ok(console) => console,
-        Err(e) => {
-            println!("failed to open UART console: {:?}", e);
-            panic!("fatal console error");
-        }
-    };
+    let mut profile_store =
+        EspNvsProfileStore::new().map_err(EmbeddedSmokeError::ProfileStoreOpen)?;
+    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedSmokeError::BondStoreOpen)?;
+    let mut uart_console =
+        EspUartBufferedConsole::new_default().map_err(EmbeddedSmokeError::ConsoleOpen)?;
 
     let mut app = App::bootstrap(&profile_store);
     let mut console_buffer = FramedConsoleBuffer::new();
@@ -427,24 +426,34 @@ fn run_embedded_uart_console_smoke() -> ! {
     println!("profile: {}", active_profile.as_str());
     println!("persona: {}", output_persona.as_str());
     println!("bonds: {}", if bonds_present { "present" } else { "none" });
-    println!("UART console is ready for commands");
+    println!("console is ready for commands");
 
     loop {
-        // Pull RX bytes from UART into the buffer
-        let _ = uart_console.pull_rx_into(&mut console_buffer);
+        if let Err(e) = uart_console.pull_rx_into(&mut console_buffer) {
+            println!("recoverable RX error: {:?}", e);
+        }
 
-        // Service at most one buffered console command
-        let _ = app.service_console_buffer_once(
+        match app.service_console_buffer_once(
             &mut console_buffer,
             &mut profile_store,
             &mut bond_store,
             ble_state,
-        );
+        ) {
+            Ok(app::BufferedConsoleOutcome::Responded(resp)) => {
+                println!("console response: {:?}", resp);
+            }
+            Ok(app::BufferedConsoleOutcome::Idle) => {}
+            Err(e) => {
+                println!("recoverable console error: {:?}", e);
+                // Clear the RX buffer to recover from framing/decode errors
+                console_buffer.clear_rx();
+            }
+        }
 
-        // Flush queued TX bytes back to UART
-        let _ = uart_console.flush_tx_from(&mut console_buffer);
+        if let Err(e) = uart_console.flush_tx_from(&mut console_buffer) {
+            println!("recoverable TX error: {:?}", e);
+        }
 
-        // Small yield
         std::thread::yield_now();
     }
 }
@@ -605,7 +614,12 @@ fn main() {
 
     #[cfg(target_os = "espidf")]
     {
-        run_embedded_uart_console_smoke();
+        if let Err(e) = run_embedded_uart_console_smoke() {
+            println!("fatal smoke initialization failure: {}", e);
+            loop {
+                std::thread::yield_now();
+            }
+        }
     }
 
     #[cfg(not(target_os = "espidf"))]
@@ -977,5 +991,28 @@ mod host_demo_tests {
             other => panic!("expected Info response, got {:?}", other),
         }
         assert!(!res.console_tx.is_empty());
+    }
+
+    #[test]
+    fn embedded_smoke_error_formatting_matches_expected() {
+        use usb2ble_platform_espidf::console_uart::ConsoleError;
+        use usb2ble_platform_espidf::nvs_store::StoreError;
+
+        let profile_err = EmbeddedSmokeError::ProfileStoreOpen(StoreError::BackendFailure);
+        let bond_err = EmbeddedSmokeError::BondStoreOpen(StoreError::BackendFailure);
+        let console_err = EmbeddedSmokeError::ConsoleOpen(ConsoleError::Transport);
+
+        assert_eq!(
+            format!("{}", profile_err),
+            "failed to open profile store: BackendFailure"
+        );
+        assert_eq!(
+            format!("{}", bond_err),
+            "failed to open bond store: BackendFailure"
+        );
+        assert_eq!(
+            format!("{}", console_err),
+            "failed to open console: Transport"
+        );
     }
 }
