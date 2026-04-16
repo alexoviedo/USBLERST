@@ -440,7 +440,10 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
 
     loop {
         if let Some(ref mut host) = usb_host {
-            let _ = host.service_until_idle();
+            if let Err(e) = host.service_until_idle() {
+                println!("warning: USB host service error: {:?}", e);
+            }
+
             while let Some(event) = host.poll_event() {
                 match event {
                     usb2ble_platform_espidf::usb_host::UsbEvent::DeviceAttached(meta) => {
@@ -449,6 +452,19 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
                             meta.device_id.raw(),
                             meta.vendor_id,
                             meta.product_id
+                        );
+                    }
+                    usb2ble_platform_espidf::usb_host::UsbEvent::ReportDescriptorReceived {
+                        device_id,
+                        bytes,
+                        len,
+                    } => {
+                        let preview_len = len.min(16);
+                        println!(
+                            "usb descriptor: id={} len={} preview={}",
+                            device_id.raw(),
+                            len,
+                            hex_format(&bytes[..preview_len])
                         );
                     }
                     usb2ble_platform_espidf::usb_host::UsbEvent::DeviceDetached(id) => {
