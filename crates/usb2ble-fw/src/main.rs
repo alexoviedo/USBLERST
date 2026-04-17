@@ -46,6 +46,25 @@ enum HostToolError {
     UnexpectedDemoOutcome(&'static str, app::BufferedPersonaAppPumpOutcome),
 }
 
+#[cfg(any(target_os = "espidf", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmbeddedSmokeError {
+    ProfileStore(usb2ble_platform_espidf::nvs_store::StoreError),
+    BondStore(usb2ble_platform_espidf::nvs_store::StoreError),
+    Console(usb2ble_platform_espidf::console_uart::ConsoleError),
+}
+
+#[cfg(any(target_os = "espidf", test))]
+impl std::fmt::Display for EmbeddedSmokeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProfileStore(e) => write!(f, "failed to open profile store: {:?}", e),
+            Self::BondStore(e) => write!(f, "failed to open bond store: {:?}", e),
+            Self::Console(e) => write!(f, "failed to open console: {:?}", e),
+        }
+    }
+}
+
 impl std::fmt::Display for HostToolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -384,6 +403,121 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
     })
 }
 
+#[cfg(target_os = "espidf")]
+fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
+    use usb2ble_platform_espidf::ble_hid::BleConnectionState;
+    use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
+    use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
+    use usb2ble_platform_espidf::usb_host::{EspUsbHostIngress, UsbIngress};
+
+    let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedSmokeError::ProfileStore)?;
+    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedSmokeError::BondStore)?;
+    let mut uart_console =
+        EspUartBufferedConsole::new_default().map_err(EmbeddedSmokeError::Console)?;
+
+    let mut usb_host = match EspUsbHostIngress::new_single_client() {
+        Ok(host) => Some(host),
+        Err(e) => {
+            println!("warning: USB host initialization failed: {:?}", e);
+            None
+        }
+    };
+
+    let mut app = App::bootstrap(&profile_store);
+    let mut console_buffer = FramedConsoleBuffer::new();
+    let ble_state = BleConnectionState::Idle;
+
+    let active_profile = app.runtime().active_profile();
+    let output_persona = active_profile.output_persona();
+    let bonds_present = bond_store.bonds_present();
+
+    println!("== usb2ble firmware starting ==");
+    println!("firmware: {}", app::APP_NAME);
+    println!("profile: {}", active_profile.as_str());
+    println!("persona: {}", output_persona.as_str());
+    println!("bonds: {}", if bonds_present { "present" } else { "none" });
+    println!("console is ready for commands");
+
+    loop {
+        if let Some(ref mut host) = usb_host {
+            if let Err(e) = host.service_until_idle() {
+                println!("warning: USB host service error: {:?}", e);
+            }
+
+            while let Some(event) = host.poll_event() {
+                match event {
+                    usb2ble_platform_espidf::usb_host::UsbEvent::DeviceAttached(meta) => {
+                        println!(
+                            "usb attach: id={} vid=0x{:04X} pid=0x{:04X}",
+                            meta.device_id.raw(),
+                            meta.vendor_id,
+                            meta.product_id
+                        );
+                    }
+                    usb2ble_platform_espidf::usb_host::UsbEvent::ReportDescriptorReceived {
+                        device_id,
+                        bytes,
+                        len,
+                    } => {
+                        let preview_len = len.min(16);
+                        println!(
+                            "usb descriptor: id={} len={} preview={}",
+                            device_id.raw(),
+                            len,
+                            hex_format(&bytes[..preview_len])
+                        );
+                    }
+                    usb2ble_platform_espidf::usb_host::UsbEvent::InputReportReceived {
+                        device_id,
+                        report_id,
+                        bytes,
+                        len,
+                    } => {
+                        let preview_len = len.min(16);
+                        println!(
+                            "usb input: id={} report_id=0x{:02X} len={} preview={}",
+                            device_id.raw(),
+                            report_id,
+                            len,
+                            hex_format(&bytes[..preview_len])
+                        );
+                    }
+                    usb2ble_platform_espidf::usb_host::UsbEvent::DeviceDetached(id) => {
+                        println!("usb detach: id={}", id.raw());
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = uart_console.pull_rx_into(&mut console_buffer) {
+            println!("recoverable RX error: {:?}", e);
+        }
+
+        match app.service_console_buffer_once(
+            &mut console_buffer,
+            &mut profile_store,
+            &mut bond_store,
+            ble_state,
+        ) {
+            Ok(app::BufferedConsoleOutcome::Responded(resp)) => {
+                println!("console response: {:?}", resp);
+            }
+            Ok(app::BufferedConsoleOutcome::Idle) => {}
+            Err(e) => {
+                println!("recoverable console error: {:?}", e);
+                // Clear the RX buffer to recover from framing/decode errors
+                console_buffer.clear_rx();
+            }
+        }
+
+        if let Err(e) = uart_console.flush_tx_from(&mut console_buffer) {
+            println!("recoverable TX error: {:?}", e);
+        }
+
+        std::thread::yield_now();
+    }
+}
+
 fn main() {
     usb2ble_platform_espidf::link_patches_if_needed();
 
@@ -538,21 +672,34 @@ fn main() {
         return;
     }
 
-    let bootstrap_result = app::bootstrap_default();
-
-    match bootstrap_result {
-        Ok(app_instance) => {
-            println!(
-                "bootstrap: app={}, core={}, proto={}, platform={}, profile={}",
-                app::APP_NAME,
-                usb2ble_core::CORE_CRATE_NAME,
-                usb2ble_proto::PROTO_CRATE_NAME,
-                usb2ble_platform_espidf::PLATFORM_CRATE_NAME,
-                app_instance.runtime().active_profile().as_str()
-            );
+    #[cfg(target_os = "espidf")]
+    {
+        if let Err(e) = run_embedded_uart_console_smoke() {
+            println!("fatal smoke initialization failure: {}", e);
+            loop {
+                std::thread::yield_now();
+            }
         }
-        Err(error) => {
-            println!("bootstrap failed: {:?}", error);
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    {
+        let bootstrap_result = app::bootstrap_default();
+
+        match bootstrap_result {
+            Ok(app_instance) => {
+                println!(
+                    "bootstrap: app={}, core={}, proto={}, platform={}, profile={}",
+                    app::APP_NAME,
+                    usb2ble_core::CORE_CRATE_NAME,
+                    usb2ble_proto::PROTO_CRATE_NAME,
+                    usb2ble_platform_espidf::PLATFORM_CRATE_NAME,
+                    app_instance.runtime().active_profile().as_str()
+                );
+            }
+            Err(error) => {
+                println!("bootstrap failed: {:?}", error);
+            }
         }
     }
 }
@@ -904,5 +1051,28 @@ mod host_demo_tests {
             other => panic!("expected Info response, got {:?}", other),
         }
         assert!(!res.console_tx.is_empty());
+    }
+
+    #[test]
+    fn embedded_smoke_error_formatting_matches_expected() {
+        use usb2ble_platform_espidf::console_uart::ConsoleError;
+        use usb2ble_platform_espidf::nvs_store::StoreError;
+
+        let profile_err = EmbeddedSmokeError::ProfileStore(StoreError::BackendFailure);
+        let bond_err = EmbeddedSmokeError::BondStore(StoreError::BackendFailure);
+        let console_err = EmbeddedSmokeError::Console(ConsoleError::Transport);
+
+        assert_eq!(
+            format!("{}", profile_err),
+            "failed to open profile store: BackendFailure"
+        );
+        assert_eq!(
+            format!("{}", bond_err),
+            "failed to open bond store: BackendFailure"
+        );
+        assert_eq!(
+            format!("{}", console_err),
+            "failed to open console: Transport"
+        );
     }
 }

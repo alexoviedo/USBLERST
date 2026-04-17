@@ -1,3 +1,8 @@
+#[cfg(target_os = "espidf")]
+use esp_idf_sys::{
+    self, fcntl, read, write, EAGAIN, F_GETFL, F_SETFL, O_NONBLOCK, STDIN_FILENO, STDOUT_FILENO,
+};
+
 /// Fixed-capacity RX buffer size for framed console bytes.
 pub const RX_BUFFER_CAPACITY: usize = 128;
 
@@ -63,6 +68,115 @@ pub struct FramedConsoleBuffer {
 impl Default for FramedConsoleBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// ESP-IDF-backed UART console transport for embedded builds.
+#[cfg(target_os = "espidf")]
+pub struct EspUartBufferedConsole;
+
+/// Host stub for the ESP-IDF-backed UART console transport.
+#[cfg(not(target_os = "espidf"))]
+pub struct EspUartBufferedConsole;
+
+#[cfg(target_os = "espidf")]
+impl EspUartBufferedConsole {
+    /// Creates a UART transport using the board's default VFS console.
+    pub fn new_default() -> Result<Self, ConsoleError> {
+        // SAFETY: fcntl is a standard ESP-IDF system call.
+        // We set STDIN to non-blocking so pull_rx_into does not stall.
+        unsafe {
+            let flags = fcntl(STDIN_FILENO, F_GETFL);
+            if flags == -1 {
+                return Err(ConsoleError::Transport);
+            }
+            if fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK as i32) == -1 {
+                return Err(ConsoleError::Transport);
+            }
+        }
+
+        Ok(Self)
+    }
+
+    /// Pulls RX bytes from the default console into the provided framed buffer.
+    pub fn pull_rx_into(
+        &mut self,
+        buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        let mut temp_buf = [0_u8; 64];
+
+        // SAFETY: read from STDIN_FILENO is safe on ESP-IDF when using standard VFS.
+        let bytes_read = unsafe { read(STDIN_FILENO, temp_buf.as_mut_ptr() as *mut _, 64) };
+
+        if bytes_read > 0 {
+            let len = bytes_read as usize;
+            buffer
+                .push_rx_bytes(&temp_buf[..len])
+                .map_err(|_| ConsoleError::Transport)?;
+            Ok(len)
+        } else if bytes_read == 0 {
+            Ok(0)
+        } else {
+            // SAFETY: Checking errno is safe after a failed system call.
+            let err = unsafe { *esp_idf_sys::__errno() };
+            if err == EAGAIN as i32 {
+                Ok(0)
+            } else {
+                Err(ConsoleError::Transport)
+            }
+        }
+    }
+
+    /// Flushes queued TX bytes from the framed buffer back to the default console.
+    pub fn flush_tx_from(
+        &mut self,
+        buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        let mut temp_buf = [0_u8; 64];
+        let mut total_written = 0;
+
+        loop {
+            let drained = buffer.drain_tx_into(&mut temp_buf);
+            if drained == 0 {
+                break;
+            }
+
+            // SAFETY: write to STDOUT_FILENO is safe on ESP-IDF when using standard VFS.
+            let written =
+                unsafe { write(STDOUT_FILENO, temp_buf.as_ptr() as *const _, drained as u32) };
+
+            if written < 0 {
+                return Err(ConsoleError::Transport);
+            }
+
+            total_written += written as usize;
+        }
+
+        Ok(total_written)
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+impl EspUartBufferedConsole {
+    /// Returns not ready on host targets.
+    pub fn new_default() -> Result<Self, ConsoleError> {
+        Err(ConsoleError::NotReady)
+    }
+
+    /// Returns not ready on host targets.
+    pub fn pull_rx_into(
+        &mut self,
+        _buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        Err(ConsoleError::NotReady)
+    }
+
+    /// Returns not ready on host targets.
+    pub fn flush_tx_from(
+        &mut self,
+        _buffer: &mut FramedConsoleBuffer,
+    ) -> Result<usize, ConsoleError> {
+        Err(ConsoleError::NotReady)
     }
 }
 
@@ -510,5 +624,39 @@ mod tests {
         sink.clear_last_response();
 
         assert_eq!(sink.last_response(), None);
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn esp_uart_buffered_console_new_default_returns_not_ready_on_host() {
+        use super::EspUartBufferedConsole;
+        assert_eq!(
+            EspUartBufferedConsole::new_default().err(),
+            Some(ConsoleError::NotReady)
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn esp_uart_buffered_console_pull_rx_into_returns_not_ready_on_host() {
+        use super::EspUartBufferedConsole;
+        let mut console = EspUartBufferedConsole;
+        let mut buffer = FramedConsoleBuffer::new();
+        assert_eq!(
+            console.pull_rx_into(&mut buffer).err(),
+            Some(ConsoleError::NotReady)
+        );
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    #[test]
+    fn esp_uart_buffered_console_flush_tx_from_returns_not_ready_on_host() {
+        use super::EspUartBufferedConsole;
+        let mut console = EspUartBufferedConsole;
+        let mut buffer = FramedConsoleBuffer::new();
+        assert_eq!(
+            console.flush_tx_from(&mut buffer).err(),
+            Some(ConsoleError::NotReady)
+        );
     }
 }

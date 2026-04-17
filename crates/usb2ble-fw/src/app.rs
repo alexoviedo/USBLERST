@@ -836,6 +836,10 @@ impl App {
 
                 Ok(UsbServiceOutcome::DeviceDetached(device_id))
             }
+            _ => {
+                // Ignore other events like internal signals
+                Ok(UsbServiceOutcome::Ignored)
+            }
         }
     }
 

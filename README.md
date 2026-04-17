@@ -28,6 +28,22 @@ cargo run -p usb2ble-fw -- --demo-host
 ```
 This demonstrates the end-to-end app pipeline from boot through console commands and USB ingress reports to persona-encoded BLE wire bytes.
 
+## Hardware Smoke Path
+
+For ESP-IDF targets, the firmware includes a hardware smoke path accessible via the board's default configured console. This allows developers to interact with the runtime state and NVS storage on real hardware before the BLE and USB transports are fully implemented.
+
+After flashing, you can interact with the firmware over the default serial console using the internal protocol commands (newline-terminated).
+
+The firmware also attempts to initialize the USB host stack. If successful, plugging or unplugging a USB device will produce `usb attach` or `usb detach` log lines in the console. Attach logging includes real VID/PID when available. The firmware also attempts to fetch the first HID report descriptor and begins polling for live HID input reports, logging raw report bytes as they arrive. Full HID parsing and BLE routing are not yet implemented in this smoke path.
+
+### Example Commands
+
+- `GET_INFO`: Returns firmware identity and contract info.
+- `GET_STATUS`: Returns current BLE state, bond presence, and active profile.
+- `GET_PROFILE`: Returns the active profile ID.
+- `SET_PROFILE|t16000m_v1`: Persists a new active profile to NVS.
+- `FORGET_BONDS`: Clears all persisted BLE bonds from NVS.
+
 ## Host Replay Mode
 
 Iterate quickly by replaying scripted USB events:
