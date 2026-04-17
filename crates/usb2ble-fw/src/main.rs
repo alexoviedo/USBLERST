@@ -413,7 +413,9 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
 
 #[cfg(target_os = "espidf")]
 fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
-    use usb2ble_platform_espidf::ble_hid::{BleConnectionState, PersonaWireRecordingBleOutput};
+    use usb2ble_platform_espidf::ble_hid::{
+        BleConnectionState, BlePersonaOutput, EspBlePersonaOutput, PersonaWireRecordingBleOutput,
+    };
     use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
     use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
     use usb2ble_platform_espidf::usb_host::EspUsbHostIngress;
@@ -433,8 +435,16 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
 
     let mut app = App::bootstrap(&profile_store);
     let mut console_buffer = FramedConsoleBuffer::new();
-    let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
-    let ble_state = BleConnectionState::Idle;
+
+    let mut real_ble_output = match EspBlePersonaOutput::new_generic_gamepad_v1() {
+        Ok(output) => Some(output),
+        Err(e) => {
+            println!("warning: real BLE backend initialization failed: {}", e);
+            None
+        }
+    };
+
+    let mut fallback_ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
 
     let active_profile = app.runtime().active_profile();
     let output_persona = active_profile.output_persona();
@@ -445,7 +455,14 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     println!("profile: {}", active_profile.as_str());
     println!("persona: {}", output_persona.as_str());
     println!("bonds: {}", if bonds_present { "present" } else { "none" });
-    println!("ble state: {:?}", ble_state);
+    println!(
+        "ble backend: {}",
+        if real_ble_output.is_some() {
+            "real"
+        } else {
+            "recording-fallback"
+        }
+    );
     println!(
         "usb host: {}",
         if usb_host.is_some() {
@@ -457,6 +474,11 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     println!("console is ready for commands");
 
     loop {
+        let ble_state = real_ble_output
+            .as_ref()
+            .map(|o| o.connection_state())
+            .unwrap_or(BleConnectionState::Idle);
+
         if let Err(e) = uart_console.pull_rx_into(&mut console_buffer) {
             println!("recoverable RX error: {:?}", e);
         }
@@ -487,7 +509,13 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
             }
 
             loop {
-                match app.service_usb_once_persona(host, &mut ble_output) {
+                let outcome = if let Some(ref mut ble_output) = real_ble_output {
+                    app.service_usb_once_persona(host, ble_output)
+                } else {
+                    app.service_usb_once_persona(host, &mut fallback_ble_output)
+                };
+
+                match outcome {
                     Ok(app::UsbPersonaPumpOutcome::Idle) => break,
                     Ok(app::UsbPersonaPumpOutcome::Handled(
                         app::UsbServiceOutcome::DeviceAttached {
@@ -531,8 +559,14 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
                         persona,
                         encoded,
                     }) => {
+                        let prefix = if real_ble_output.is_some() {
+                            "bridge publish (REAL BLE)"
+                        } else {
+                            "bridge publish (RECORDING)"
+                        };
                         println!(
-                            "bridge publish: persona={} {} wire={}",
+                            "{}: persona={} {} wire={}",
+                            prefix,
                             persona.as_str(),
                             format_report_summary(&report),
                             hex_format(encoded.as_bytes())

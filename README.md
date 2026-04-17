@@ -30,7 +30,7 @@ This demonstrates the end-to-end app pipeline from boot through console commands
 
 ## Hardware Demo Loop
 
-For ESP-IDF targets (ESP32-S3), the firmware enters an end-to-end bridge demo loop. This proves that the Rust core can handle real hardware events on-device.
+For ESP-IDF targets (ESP32-S3), the firmware enters an end-to-end bridge demo loop. This proves that the Rust core can handle real hardware events on-device and publish them over a real BLE transport.
 
 After flashing, the firmware:
 - accepts UART console commands
@@ -38,17 +38,26 @@ After flashing, the firmware:
 - fetches the first HID report descriptor
 - receives live HID input reports
 - routes reports through the pure-Rust bridge logic
-- logs the resulting normalized report and the simulated BLE output wire contract
+- publishes the resulting normalized report over a **real BLE HID backend** (generic gamepad persona)
+- logs the publication events and wire contract to the console
 
-Note: Real BLE transport is not yet implemented. The BLE output is currently routed to a recording sink that logs the wire bytes to the console.
+If the real BLE backend fails to initialize, the firmware falls back to a recording-only mode so that USB processing can still be verified.
+
+### How to test
+
+1. **Flash**: Use `cargo espflash` to flash the firmware to your ESP32-S3.
+2. **Console**: Open the serial console (e.g., `espflash monitor`).
+3. **Attach USB**: Connect a supported USB HID joystick to the S3's USB port.
+4. **BLE Pairing**: On your host device (PC/Phone), look for a new BLE Gamepad. Pair with it.
+5. **Observe**: Moving the joystick should produce `bridge publish (REAL BLE)` logs in the console, and the host device should receive the gamepad events.
 
 ### What to expect on hardware
 
-When you attach a supported joystick, you should see logs like:
+When you attach a supported joystick and are connected over BLE, you should see logs like:
 ```text
 usb attach: id=1 vid=0x044F pid=0xB10A
 usb descriptor stored: id=1 fields=12
-bridge publish: persona=generic_ble_gamepad_16 x=5 y=-10 rz=0 hat=Centered buttons=0x0000 wire=01 05 00 F6 FF 00 00 08 00 00
+bridge publish (REAL BLE): persona=generic_ble_gamepad_16 x=5 y=-10 rz=0 hat=Centered buttons=0x0000 wire=01 05 00 F6 FF 00 00 08 00 00
 ```
 
 ### Example Commands

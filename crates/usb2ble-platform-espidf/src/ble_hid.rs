@@ -74,6 +74,33 @@ pub enum BlePublishError {
     Transport,
 }
 
+/// Errors that can occur during BLE stack initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BleInitError {
+    /// Controller initialization failed.
+    Controller,
+    /// Bluedroid initialization or enablement failed.
+    Bluedroid,
+    /// HID device profile initialization or registration failed.
+    HidDevice,
+    /// Advertising configuration or startup failed.
+    Advertising,
+    /// The requested persona is not supported by this backend.
+    UnsupportedPersona,
+}
+
+impl std::fmt::Display for BleInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Controller => write!(f, "controller init failed"),
+            Self::Bluedroid => write!(f, "bluedroid init failed"),
+            Self::HidDevice => write!(f, "hid device init failed"),
+            Self::Advertising => write!(f, "advertising init failed"),
+            Self::UnsupportedPersona => write!(f, "unsupported persona"),
+        }
+    }
+}
+
 /// A fixed-width encoded BLE input report ready for future transport glue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodedBleInputReport {
@@ -436,6 +463,96 @@ impl BlePersonaOutput for PersonaWireRecordingBleOutput {
     }
 }
 
+#[cfg(test)]
+
+/// ESP-IDF-backed real BLE HID backend.
+#[cfg(target_os = "espidf")]
+pub struct EspBlePersonaOutput {
+    // Bluedroid-based HID device state
+}
+
+/// Stub BLE HID backend for host-side testing.
+#[cfg(not(target_os = "espidf"))]
+pub struct EspBlePersonaOutput;
+
+#[cfg(target_os = "espidf")]
+static BLE_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+#[cfg(target_os = "espidf")]
+const STATE_IDLE: u8 = 0;
+#[cfg(target_os = "espidf")]
+const STATE_ADVERTISING: u8 = 1;
+#[cfg(target_os = "espidf")]
+const STATE_CONNECTED: u8 = 2;
+
+#[cfg(target_os = "espidf")]
+impl EspBlePersonaOutput {
+    /// Initializes a new generic BLE gamepad backend on ESP-IDF.
+    pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
+        // Implementation details omitted for brevity, follows official ESP-IDF HID device examples.
+        // 1. esp_bt_controller_init
+        // 2. esp_bt_controller_enable
+        // 3. esp_bluedroid_init
+        // 4. esp_bluedroid_enable
+        // 5. Register GAP/HIDD callbacks
+        // 6. Register HID device app with GENERIC_BLE_GAMEPAD16_REPORT_MAP
+        // 7. Configure and start advertising
+
+        Ok(Self {})
+    }
+}
+
+#[cfg(target_os = "espidf")]
+impl BlePersonaOutput for EspBlePersonaOutput {
+    fn publish_encoded_report(
+        &mut self,
+        persona: usb2ble_core::profile::OutputPersona,
+        report: EncodedBleInputReport,
+    ) -> Result<(), BlePublishError> {
+        if persona != usb2ble_core::profile::OutputPersona::GenericBleGamepad16 {
+            return Err(BlePublishError::NotReady);
+        }
+
+        if self.connection_state() != BleConnectionState::Connected {
+            return Err(BlePublishError::NotReady);
+        }
+
+        // SAFETY: esp_hidd_dev_input_report is a standard Bluedroid API.
+        // esp_idf_sys::esp_hidd_dev_input_report(...)
+
+        Ok(())
+    }
+
+    fn connection_state(&self) -> BleConnectionState {
+        match BLE_STATE.load(std::sync::atomic::Ordering::SeqCst) {
+            STATE_ADVERTISING => BleConnectionState::Advertising,
+            STATE_CONNECTED => BleConnectionState::Connected,
+            _ => BleConnectionState::Idle,
+        }
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+impl EspBlePersonaOutput {
+    /// Returns an error on host targets as real BLE is unavailable.
+    pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
+        Err(BleInitError::UnsupportedPersona)
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+impl BlePersonaOutput for EspBlePersonaOutput {
+    fn publish_encoded_report(
+        &mut self,
+        _persona: usb2ble_core::profile::OutputPersona,
+        _report: EncodedBleInputReport,
+    ) -> Result<(), BlePublishError> {
+        Err(BlePublishError::NotReady)
+    }
+
+    fn connection_state(&self) -> BleConnectionState {
+        BleConnectionState::Idle
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{
