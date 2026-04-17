@@ -52,6 +52,9 @@ pub enum UsbEvent {
     },
     /// A USB device has been detached.
     DeviceDetached(UsbDeviceId),
+    /// Internal signal that an input transfer has stopped for a device.
+    #[doc(hidden)]
+    InputTransferStopped(UsbDeviceId),
 }
 
 /// Poll-based USB ingress boundary for the future ESP-IDF host glue.
@@ -293,12 +296,13 @@ impl EspUsbHostIngress {
                     }
                     self.final_events.push_back(UsbEvent::DeviceDetached(id));
                 }
-                UsbEvent::ReportDescriptorReceived { .. } => {
-                    // Staging events from transfer_cb are already final shape
+                UsbEvent::ReportDescriptorReceived { .. }
+                | UsbEvent::InputReportReceived { .. } => {
+                    // Staging events from transfer callbacks are promoted to final queue
                     self.final_events.push_back(event);
                 }
-                _ => {
-                    // Ignore other raw staging events for now
+                UsbEvent::InputTransferStopped(id) => {
+                    self.input_transfers.remove(&id.raw());
                 }
             }
             work_done += 1;
@@ -477,21 +481,17 @@ unsafe extern "C" fn input_report_cb(transfer: *mut esp_idf_sys::usb_transfer_t)
     let staging = &mut *((*transfer).context as *mut IngressStaging);
     let actual_len = (*transfer).actual_num_bytes as usize;
 
+    let mut address: u8 = 0;
+    let _ = esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
+    let device_id = UsbDeviceId::new(address);
+
     if (*transfer).status == esp_idf_sys::usb_transfer_status_t_USB_TRANSFER_STATUS_COMPLETED {
         if actual_len > 0 {
-            let mut data = [0_u8; 64];
-            let copy_len = actual_len.min(64);
-            std::ptr::copy_nonoverlapping((*transfer).data_buffer, data.as_mut_ptr(), copy_len);
-
-            let mut address: u8 = 0;
-            let _ = esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
-
-            // Crude report ID guess: first byte if non-zero?
-            // For now, we'll just log the whole thing as report ID 0 or the first byte.
-            let report_id = if actual_len > 0 { data[0] } else { 0 };
+            let (data, copy_len) = copy_input_payload(transfer);
+            let (report_id, _) = derive_report_id_and_len(&data[..copy_len]);
 
             staging.events.push_back(UsbEvent::InputReportReceived {
-                device_id: UsbDeviceId::new(address),
+                device_id,
                 report_id,
                 bytes: data,
                 len: copy_len,
@@ -501,19 +501,17 @@ unsafe extern "C" fn input_report_cb(transfer: *mut esp_idf_sys::usb_transfer_t)
         // Resubmit the transfer to keep polling
         let res = esp_idf_sys::usb_host_transfer_submit(transfer);
         if res != esp_idf_sys::ESP_OK {
-            // If resubmit fails, we stop polling for this device
+            staging
+                .events
+                .push_back(UsbEvent::InputTransferStopped(device_id));
             let _ = esp_idf_sys::usb_host_transfer_free(transfer);
         }
-    } else if (*transfer).status == esp_idf_sys::usb_transfer_status_t_USB_TRANSFER_STATUS_CANCELLED
-    {
-        // Cleanup on cancellation
-        let _ = esp_idf_sys::usb_host_transfer_free(transfer);
     } else {
-        // Other errors (like timeout), just resubmit for smoke test
-        let res = esp_idf_sys::usb_host_transfer_submit(transfer);
-        if res != esp_idf_sys::ESP_OK {
-            let _ = esp_idf_sys::usb_host_transfer_free(transfer);
-        }
+        // Transfer stopped or failed (cancelled/timeout/error)
+        staging
+            .events
+            .push_back(UsbEvent::InputTransferStopped(device_id));
+        let _ = esp_idf_sys::usb_host_transfer_free(transfer);
     }
 }
 
@@ -565,6 +563,25 @@ unsafe extern "C" fn transfer_cb(transfer: *mut esp_idf_sys::usb_transfer_t) {
     }
 
     let _ = esp_idf_sys::usb_host_transfer_free(transfer);
+}
+
+/// Derives the HID report ID and length from a raw input report.
+pub fn derive_report_id_and_len(bytes: &[u8]) -> (u8, usize) {
+    if bytes.is_empty() {
+        (0, 0)
+    } else {
+        // For now, use the first byte as the report ID in this smoke path.
+        (bytes[0], bytes.len())
+    }
+}
+
+#[cfg(target_os = "espidf")]
+unsafe fn copy_input_payload(transfer: *mut esp_idf_sys::usb_transfer_t) -> ([u8; 64], usize) {
+    let mut data = [0_u8; 64];
+    let actual_len = (*transfer).actual_num_bytes as usize;
+    let copy_len = actual_len.min(64);
+    std::ptr::copy_nonoverlapping((*transfer).data_buffer, data.as_mut_ptr(), copy_len);
+    (data, copy_len)
 }
 
 #[cfg(target_os = "espidf")]
@@ -646,5 +663,16 @@ mod tests {
     #[test]
     fn usb_host_error_transport_compares_equal() {
         assert_eq!(UsbHostError::Transport, UsbHostError::Transport);
+    }
+
+    #[test]
+    fn derive_report_id_and_len_returns_zero_for_empty_input() {
+        assert_eq!(derive_report_id_and_len(&[]), (0, 0));
+    }
+
+    #[test]
+    fn derive_report_id_and_len_extracts_first_byte_as_id() {
+        let data = [0x01, 0x02, 0x03];
+        assert_eq!(derive_report_id_and_len(&data), (0x01, 3));
     }
 }
