@@ -467,10 +467,24 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
                             hex_format(&bytes[..preview_len])
                         );
                     }
+                    usb2ble_platform_espidf::usb_host::UsbEvent::InputReportReceived {
+                        device_id,
+                        report_id,
+                        bytes,
+                        len,
+                    } => {
+                        let preview_len = len.min(16);
+                        println!(
+                            "usb input: id={} report_id=0x{:02X} len={} preview={}",
+                            device_id.raw(),
+                            report_id,
+                            len,
+                            hex_format(&bytes[..preview_len])
+                        );
+                    }
                     usb2ble_platform_espidf::usb_host::UsbEvent::DeviceDetached(id) => {
                         println!("usb detach: id={}", id.raw());
                     }
-                    _ => {}
                 }
             }
         }

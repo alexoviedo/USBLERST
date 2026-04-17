@@ -152,6 +152,8 @@ pub struct EspUsbHostIngress {
     final_events: std::collections::VecDeque<UsbEvent>,
     /// Tracked device handles for descriptor access and closing.
     devices: std::collections::HashMap<u8, esp_idf_sys::usb_host_device_handle_t>,
+    /// Tracked input transfers per device to allow cleanup.
+    input_transfers: std::collections::HashMap<u8, *mut esp_idf_sys::usb_transfer_t>,
 }
 
 /// Host stub for the ESP-IDF-backed USB host ingress.
@@ -202,6 +204,7 @@ impl EspUsbHostIngress {
                 staging: Box::from_raw(staging_ptr),
                 final_events: std::collections::VecDeque::new(),
                 devices: std::collections::HashMap::new(),
+                input_transfers: std::collections::HashMap::new(),
             })
         }
     }
@@ -275,6 +278,13 @@ impl EspUsbHostIngress {
                 }
                 UsbEvent::DeviceDetached(id) => {
                     let address = id.raw();
+                    if let Some(transfer) = self.input_transfers.remove(&address) {
+                        // SAFETY: standard ESP-IDF USB host transfer cancel/free
+                        unsafe {
+                            let _ = esp_idf_sys::usb_host_transfer_cancel(transfer);
+                            // NOTE: transfer_free is typically called in the callback after cancellation
+                        }
+                    }
                     if let Some(dev_hdl) = self.devices.remove(&address) {
                         // SAFETY: standard ESP-IDF USB host device close
                         unsafe {
@@ -314,7 +324,7 @@ impl EspUsbHostIngress {
         let mut offset = 0;
         let total_len = (*config_desc).wTotalLength as usize;
 
-        // Simple iterator through descriptors to find the first HID interface
+        // Simple iterator through descriptors to find the first HID interface and its interrupt IN endpoint
         while offset < total_len {
             let desc =
                 (config_desc as *const u8).add(offset) as *const esp_idf_sys::usb_standard_desc_t;
@@ -326,34 +336,99 @@ impl EspUsbHostIngress {
                 let iface_desc = desc as *const esp_idf_sys::usb_intf_desc_t;
                 if (*iface_desc).bInterfaceClass == 0x03 {
                     let interface_number = (*iface_desc).bInterfaceNumber;
-                    // HID Interface found. Search for HID descriptor following it.
-                    let mut hid_offset = offset + b_length;
-                    while hid_offset < total_len {
-                        let h_desc = (config_desc as *const u8).add(hid_offset)
+                    let mut hid_desc_info = None;
+                    let mut endpoint_info = None;
+
+                    // Search for HID descriptor and Interrupt IN endpoint within this interface
+                    let mut sub_offset = offset + b_length;
+                    while sub_offset < total_len {
+                        let sub_desc = (config_desc as *const u8).add(sub_offset)
                             as *const esp_idf_sys::usb_standard_desc_t;
-                        if (*h_desc).bDescriptorType == 0x21 {
+                        if (*sub_desc).bDescriptorType == 0x21 {
                             // HID Descriptor
-                            // Byte 7 and 8 are the length of the first report descriptor.
-                            let h_ptr = h_desc as *const u8;
+                            let h_ptr = sub_desc as *const u8;
                             let report_desc_len =
                                 (*h_ptr.add(7) as u16) | ((*h_ptr.add(8) as u16) << 8);
-
-                            return self.submit_report_descriptor_transfer(
-                                dev_hdl,
-                                interface_number,
-                                report_desc_len,
-                            );
-                        } else if (*h_desc).bDescriptorType == 0x04
-                            || (*h_desc).bDescriptorType == 0x05
-                        {
+                            hid_desc_info = Some(report_desc_len);
+                        } else if (*sub_desc).bDescriptorType == 0x05 {
+                            // Endpoint descriptor
+                            let ep_desc = sub_desc as *const esp_idf_sys::usb_ep_desc_t;
+                            if ((*ep_desc).bmAttributes & 0x03) == 0x03
+                                && ((*ep_desc).bEndpointAddress & 0x80) != 0
+                            {
+                                // Interrupt IN endpoint
+                                endpoint_info =
+                                    Some(((*ep_desc).bEndpointAddress, (*ep_desc).wMaxPacketSize));
+                            }
+                        } else if (*sub_desc).bDescriptorType == 0x04 {
+                            // Next interface, stop searching
                             break;
                         }
-                        hid_offset += (*h_desc).bLength as usize;
+                        sub_offset += (*sub_desc).bLength as usize;
                     }
+
+                    if let Some(report_desc_len) = hid_desc_info {
+                        let _ = self.submit_report_descriptor_transfer(
+                            dev_hdl,
+                            interface_number,
+                            report_desc_len,
+                        );
+                    }
+
+                    if let Some((ep_addr, max_packet_size)) = endpoint_info {
+                        let _ = self.submit_input_report_transfer(
+                            dev_hdl,
+                            interface_number,
+                            ep_addr,
+                            max_packet_size,
+                        );
+                    }
+
+                    return Ok(());
                 }
             }
             offset += b_length;
         }
+
+        Ok(())
+    }
+
+    unsafe fn submit_input_report_transfer(
+        &mut self,
+        dev_hdl: esp_idf_sys::usb_host_device_handle_t,
+        interface_number: u8,
+        ep_addr: u8,
+        max_packet_size: u16,
+    ) -> Result<(), UsbHostError> {
+        // Claim interface before starting input reports
+        let res =
+            esp_idf_sys::usb_host_interface_claim(self.client_hdl, dev_hdl, interface_number, 0);
+        if res != esp_idf_sys::ESP_OK {
+            // It's fine if already claimed or failed for some reason in smoke path
+        }
+
+        let mut transfer: *mut esp_idf_sys::usb_transfer_t = std::ptr::null_mut();
+        let res = esp_idf_sys::usb_host_transfer_alloc(max_packet_size as usize, 0, &mut transfer);
+
+        if res != esp_idf_sys::ESP_OK {
+            return Err(UsbHostError::Transfer);
+        }
+
+        (*transfer).device_handle = dev_hdl;
+        (*transfer).callback = Some(input_report_cb);
+        (*transfer).context = &mut *self.staging as *mut IngressStaging as *mut _;
+        (*transfer).bEndpointAddress = ep_addr;
+        (*transfer).num_bytes = max_packet_size as i32;
+
+        let res = esp_idf_sys::usb_host_transfer_submit(transfer);
+        if res != esp_idf_sys::ESP_OK {
+            let _ = esp_idf_sys::usb_host_transfer_free(transfer);
+            return Err(UsbHostError::Transfer);
+        }
+
+        let mut address: u8 = 0;
+        let _ = esp_idf_sys::usb_host_device_addr(dev_hdl, &mut address);
+        self.input_transfers.insert(address, transfer);
 
         Ok(())
     }
@@ -394,6 +469,51 @@ impl EspUsbHostIngress {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(target_os = "espidf")]
+unsafe extern "C" fn input_report_cb(transfer: *mut esp_idf_sys::usb_transfer_t) {
+    let staging = &mut *((*transfer).context as *mut IngressStaging);
+    let actual_len = (*transfer).actual_num_bytes as usize;
+
+    if (*transfer).status == esp_idf_sys::usb_transfer_status_t_USB_TRANSFER_STATUS_COMPLETED {
+        if actual_len > 0 {
+            let mut data = [0_u8; 64];
+            let copy_len = actual_len.min(64);
+            std::ptr::copy_nonoverlapping((*transfer).data_buffer, data.as_mut_ptr(), copy_len);
+
+            let mut address: u8 = 0;
+            let _ = esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
+
+            // Crude report ID guess: first byte if non-zero?
+            // For now, we'll just log the whole thing as report ID 0 or the first byte.
+            let report_id = if actual_len > 0 { data[0] } else { 0 };
+
+            staging.events.push_back(UsbEvent::InputReportReceived {
+                device_id: UsbDeviceId::new(address),
+                report_id,
+                bytes: data,
+                len: copy_len,
+            });
+        }
+
+        // Resubmit the transfer to keep polling
+        let res = esp_idf_sys::usb_host_transfer_submit(transfer);
+        if res != esp_idf_sys::ESP_OK {
+            // If resubmit fails, we stop polling for this device
+            let _ = esp_idf_sys::usb_host_transfer_free(transfer);
+        }
+    } else if (*transfer).status == esp_idf_sys::usb_transfer_status_t_USB_TRANSFER_STATUS_CANCELLED
+    {
+        // Cleanup on cancellation
+        let _ = esp_idf_sys::usb_host_transfer_free(transfer);
+    } else {
+        // Other errors (like timeout), just resubmit for smoke test
+        let res = esp_idf_sys::usb_host_transfer_submit(transfer);
+        if res != esp_idf_sys::ESP_OK {
+            let _ = esp_idf_sys::usb_host_transfer_free(transfer);
+        }
     }
 }
 
