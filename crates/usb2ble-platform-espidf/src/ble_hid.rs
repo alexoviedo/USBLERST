@@ -14,11 +14,6 @@ pub const GENERIC_BLE_GAMEPAD16_PERSONA_NAME: &str = "generic_ble_gamepad_16";
 pub const GENERIC_BLE_GAMEPAD16_REPORT_MAP_LEN: usize = 66;
 
 /// The fixed HID report descriptor for the lean v1 generic BLE gamepad persona.
-///
-/// This contract is intentionally unitless. The descriptor does not include an
-/// extra `0x64` Unit item because the v1 persona only needs a stable,
-/// backend-neutral axis/hat/button shape and does not rely on any physical-unit
-/// semantics.
 pub const GENERIC_BLE_GAMEPAD16_REPORT_MAP: [u8; GENERIC_BLE_GAMEPAD16_REPORT_MAP_LEN] = [
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x05, // Usage (Game Pad)
@@ -120,10 +115,6 @@ impl EncodedBleInputReport {
 }
 
 /// Static BLE persona metadata describing a fixed report contract.
-///
-/// At this stage the BLE layer is intentionally persona-oriented and
-/// backend-neutral: callers select fixed report contracts by
-/// `OutputPersona`, while concrete BLE stack glue comes later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlePersonaDescriptor {
     /// The output persona this BLE descriptor serves.
@@ -463,73 +454,12 @@ impl BlePersonaOutput for PersonaWireRecordingBleOutput {
     }
 }
 
-#[cfg(test)]
-
-/// ESP-IDF-backed real BLE HID backend.
 #[cfg(target_os = "espidf")]
-pub struct EspBlePersonaOutput {
-    // Bluedroid-based HID device state
-}
+pub use crate::ble_hid_esp::EspBlePersonaOutput;
 
-/// Stub BLE HID backend for host-side testing.
 #[cfg(not(target_os = "espidf"))]
+/// Stub BLE HID backend for host-side testing.
 pub struct EspBlePersonaOutput;
-
-#[cfg(target_os = "espidf")]
-static BLE_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-#[cfg(target_os = "espidf")]
-const STATE_IDLE: u8 = 0;
-#[cfg(target_os = "espidf")]
-const STATE_ADVERTISING: u8 = 1;
-#[cfg(target_os = "espidf")]
-const STATE_CONNECTED: u8 = 2;
-
-#[cfg(target_os = "espidf")]
-impl EspBlePersonaOutput {
-    /// Initializes a new generic BLE gamepad backend on ESP-IDF.
-    pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
-        // Implementation details omitted for brevity, follows official ESP-IDF HID device examples.
-        // 1. esp_bt_controller_init
-        // 2. esp_bt_controller_enable
-        // 3. esp_bluedroid_init
-        // 4. esp_bluedroid_enable
-        // 5. Register GAP/HIDD callbacks
-        // 6. Register HID device app with GENERIC_BLE_GAMEPAD16_REPORT_MAP
-        // 7. Configure and start advertising
-
-        Ok(Self {})
-    }
-}
-
-#[cfg(target_os = "espidf")]
-impl BlePersonaOutput for EspBlePersonaOutput {
-    fn publish_encoded_report(
-        &mut self,
-        persona: usb2ble_core::profile::OutputPersona,
-        report: EncodedBleInputReport,
-    ) -> Result<(), BlePublishError> {
-        if persona != usb2ble_core::profile::OutputPersona::GenericBleGamepad16 {
-            return Err(BlePublishError::NotReady);
-        }
-
-        if self.connection_state() != BleConnectionState::Connected {
-            return Err(BlePublishError::NotReady);
-        }
-
-        // SAFETY: esp_hidd_dev_input_report is a standard Bluedroid API.
-        // esp_idf_sys::esp_hidd_dev_input_report(...)
-
-        Ok(())
-    }
-
-    fn connection_state(&self) -> BleConnectionState {
-        match BLE_STATE.load(std::sync::atomic::Ordering::SeqCst) {
-            STATE_ADVERTISING => BleConnectionState::Advertising,
-            STATE_CONNECTED => BleConnectionState::Connected,
-            _ => BleConnectionState::Idle,
-        }
-    }
-}
 
 #[cfg(not(target_os = "espidf"))]
 impl EspBlePersonaOutput {
@@ -553,6 +483,7 @@ impl BlePersonaOutput for EspBlePersonaOutput {
         BleConnectionState::Idle
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -10,6 +10,9 @@ pub mod nvs_store;
 /// USB host seam contracts for lean v1.
 pub mod usb_host;
 
+#[cfg(target_os = "espidf")]
+mod ble_hid_esp;
+
 /// Crate identity used by bootstrap verification.
 pub const PLATFORM_CRATE_NAME: &str = "usb2ble-platform-espidf";
 
