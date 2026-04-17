@@ -60,7 +60,11 @@ pub enum UsbServiceOutcome {
     /// The event did not apply to the currently active device or state.
     Ignored,
     /// A device became the active USB source.
-    DeviceAttached(usb2ble_platform_espidf::usb_host::UsbDeviceId),
+    DeviceAttached {
+        device_id: usb2ble_platform_espidf::usb_host::UsbDeviceId,
+        vendor_id: u16,
+        product_id: u16,
+    },
     /// A descriptor was parsed and stored for the active device.
     DescriptorStored {
         /// The descriptor source device.
@@ -769,7 +773,11 @@ impl App {
                 self.active_descriptor = None;
                 self.clear_input();
 
-                Ok(UsbServiceOutcome::DeviceAttached(meta.device_id))
+                Ok(UsbServiceOutcome::DeviceAttached {
+                    device_id: meta.device_id,
+                    vendor_id: meta.vendor_id,
+                    product_id: meta.product_id,
+                })
             }
             usb2ble_platform_espidf::usb_host::UsbEvent::ReportDescriptorReceived {
                 device_id,
@@ -2357,7 +2365,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(app.active_device(), Some(device_id));
     }
@@ -2379,7 +2391,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(first_device))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id: first_device,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -2404,7 +2420,11 @@ mod tests {
                 vendor_id: 3,
                 product_id: 4,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(second_device))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id: second_device,
+                vendor_id: 3,
+                product_id: 4
+            })
         );
         assert_eq!(app.active_device(), Some(second_device));
         assert_eq!(app.active_descriptor(), None);
@@ -2430,7 +2450,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -2472,7 +2496,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(active_device))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id: active_device,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2498,7 +2526,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2535,7 +2567,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(active_device))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id: active_device,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2560,7 +2596,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2589,7 +2629,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2625,7 +2669,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(active_device))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id: active_device,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -2664,7 +2712,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2698,7 +2750,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -2743,7 +2799,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         assert_eq!(
@@ -2773,7 +2833,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -2818,7 +2882,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -2891,9 +2959,11 @@ mod tests {
 
         assert_eq!(
             app.service_usb_once(&mut usb_ingress, &mut ble_output),
-            Ok(UsbPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(
-                device_id
-            )))
+            Ok(UsbPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            }))
         );
         assert_eq!(app.active_device(), Some(device_id));
         assert_eq!(ble_output.last_report, None);
@@ -2924,7 +2994,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         usb_ingress.next_event = Some(UsbEvent::ReportDescriptorReceived {
@@ -2974,7 +3048,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -3035,9 +3113,11 @@ mod tests {
         }));
         assert_eq!(
             app.service_usb_once(&mut usb_ingress, &mut ble_output),
-            Ok(UsbPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(
-                device_id
-            )))
+            Ok(UsbPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            }))
         );
 
         usb_ingress.next_event = Some(UsbEvent::ReportDescriptorReceived {
@@ -3095,7 +3175,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
 
         usb_ingress.next_event = Some(UsbEvent::InputReportReceived {
@@ -3150,7 +3234,11 @@ mod tests {
         assert_eq!(
             app.service_usb_once_persona(&mut usb_ingress, &mut ble_output),
             Ok(UsbPersonaPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             ))
         );
         assert_eq!(app.active_device(), Some(device_id));
@@ -3175,7 +3263,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -3239,7 +3331,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -3301,7 +3397,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -3347,9 +3447,11 @@ mod tests {
         }));
         assert_eq!(
             app.service_usb_once(&mut usb_ingress, &mut ble_output),
-            Ok(UsbPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(
-                device_id
-            )))
+            Ok(UsbPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            }))
         );
 
         usb_ingress.next_event = Some(UsbEvent::ReportDescriptorReceived {
@@ -3450,7 +3552,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(AppPumpOutcome::Usb(UsbPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
         assert_eq!(usb_ingress.poll_calls, 1);
@@ -3553,7 +3659,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(AppPumpOutcome::Usb(UsbPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
         assert_eq!(app.active_device(), Some(device_id));
@@ -3607,7 +3717,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -3808,7 +3922,11 @@ mod tests {
                 vendor_id: 1,
                 product_id: 2,
             })),
-            Ok(UsbServiceOutcome::DeviceAttached(device_id))
+            Ok(UsbServiceOutcome::DeviceAttached {
+                device_id,
+                vendor_id: 1,
+                product_id: 2
+            })
         );
         assert_eq!(
             app.handle_usb_event(UsbEvent::ReportDescriptorReceived {
@@ -3910,7 +4028,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(AppPumpOutcome::Usb(UsbPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
 
@@ -4051,7 +4173,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(BufferedAppPumpOutcome::Usb(UsbPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
     }
@@ -4111,7 +4237,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(BufferedAppPumpOutcome::Usb(UsbPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
 
@@ -4195,7 +4325,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(BufferedAppPumpOutcome::Usb(UsbPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
 
@@ -4367,7 +4501,11 @@ mod tests {
         assert_eq!(
             outcome2,
             BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(UsbDeviceId::new(71))
+                UsbServiceOutcome::DeviceAttached {
+                    device_id: UsbDeviceId::new(71),
+                    vendor_id: 1,
+                    product_id: 2
+                }
             ))
         );
     }
@@ -4669,7 +4807,11 @@ mod tests {
         assert_eq!(
             result2,
             Ok(PersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(UsbDeviceId::new(81))
+                UsbServiceOutcome::DeviceAttached {
+                    device_id: UsbDeviceId::new(81),
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
     }
@@ -5023,7 +5165,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(PersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(device_id)
+                UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                }
             )))
         );
 
@@ -5150,9 +5296,11 @@ mod tests {
                 &mut ble_output,
             ),
             Ok(BufferedPersonaAppPumpOutcome::Usb(
-                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(
-                    UsbDeviceId::new(92)
-                ))
+                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached {
+                    device_id: UsbDeviceId::new(92),
+                    vendor_id: 1,
+                    product_id: 2
+                })
             ))
         );
 
@@ -5325,7 +5473,11 @@ mod tests {
         assert_eq!(
             outcome,
             Ok(BufferedPersonaAppPumpOutcome::Usb(
-                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached(device_id))
+                UsbPersonaPumpOutcome::Handled(UsbServiceOutcome::DeviceAttached {
+                    device_id,
+                    vendor_id: 1,
+                    product_id: 2
+                })
             ))
         );
     }
@@ -5629,7 +5781,11 @@ mod tests {
         assert_eq!(summary.actions_processed, 2);
         match summary.last_non_idle_outcome {
             Some(BufferedPersonaAppPumpOutcome::Usb(UsbPersonaPumpOutcome::Handled(
-                UsbServiceOutcome::DeviceAttached(id),
+                UsbServiceOutcome::DeviceAttached {
+                    device_id: id,
+                    vendor_id: 1,
+                    product_id: 2,
+                },
             ))) => {
                 assert_eq!(id, device_id);
             }

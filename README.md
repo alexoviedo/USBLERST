@@ -18,7 +18,7 @@ USBLERST is a lean v1 Rust workspace for an ESP32-S3 USB-HID-to-BLE-gamepad brid
 
 ## Status
 
-This repository is in the bootstrap phase.
+The project is moving toward a v1 release. The core app pipeline is strong and on-device bridge demo is now functional.
 
 ## Host Demo
 
@@ -28,13 +28,28 @@ cargo run -p usb2ble-fw -- --demo-host
 ```
 This demonstrates the end-to-end app pipeline from boot through console commands and USB ingress reports to persona-encoded BLE wire bytes.
 
-## Hardware Smoke Path
+## Hardware Demo Loop
 
-For ESP-IDF targets, the firmware includes a hardware smoke path accessible via the board's default configured console. This allows developers to interact with the runtime state and NVS storage on real hardware before the BLE and USB transports are fully implemented.
+For ESP-IDF targets (ESP32-S3), the firmware enters an end-to-end bridge demo loop. This proves that the Rust core can handle real hardware events on-device.
 
-After flashing, you can interact with the firmware over the default serial console using the internal protocol commands (newline-terminated).
+After flashing, the firmware:
+- accepts UART console commands
+- detects USB HID attach/detach (with VID/PID)
+- fetches the first HID report descriptor
+- receives live HID input reports
+- routes reports through the pure-Rust bridge logic
+- logs the resulting normalized report and the simulated BLE output wire contract
 
-The firmware also attempts to initialize the USB host stack. If successful, plugging or unplugging a USB device will produce `usb attach` or `usb detach` log lines in the console. Attach logging includes real VID/PID when available. The firmware also attempts to fetch the first HID report descriptor and begins polling for live HID input reports, logging raw report bytes as they arrive. Full HID parsing and BLE routing are not yet implemented in this smoke path.
+Note: Real BLE transport is not yet implemented. The BLE output is currently routed to a recording sink that logs the wire bytes to the console.
+
+### What to expect on hardware
+
+When you attach a supported joystick, you should see logs like:
+```text
+usb attach: id=1 vid=0x044F pid=0xB10A
+usb descriptor stored: id=1 fields=12
+bridge publish: persona=generic_ble_gamepad_16 x=5 y=-10 rz=0 hat=Centered buttons=0x0000 wire=01 05 00 F6 FF 00 00 08 00 00
+```
 
 ### Example Commands
 

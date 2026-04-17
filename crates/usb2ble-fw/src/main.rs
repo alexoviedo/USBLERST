@@ -48,14 +48,14 @@ enum HostToolError {
 
 #[cfg(any(target_os = "espidf", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EmbeddedSmokeError {
+enum EmbeddedDemoError {
     ProfileStore(usb2ble_platform_espidf::nvs_store::StoreError),
     BondStore(usb2ble_platform_espidf::nvs_store::StoreError),
     Console(usb2ble_platform_espidf::console_uart::ConsoleError),
 }
 
 #[cfg(any(target_os = "espidf", test))]
-impl std::fmt::Display for EmbeddedSmokeError {
+impl std::fmt::Display for EmbeddedDemoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ProfileStore(e) => write!(f, "failed to open profile store: {:?}", e),
@@ -109,6 +109,14 @@ fn hex_format(bytes: &[u8]) -> String {
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<String>>()
         .join(" ")
+}
+
+#[allow(dead_code)]
+fn format_report_summary(report: &usb2ble_core::runtime::GenericBleGamepad16Report) -> String {
+    format!(
+        "x={} y={} rz={} hat={:?} buttons=0x{:04X}",
+        report.x, report.y, report.rz, report.hat, report.buttons
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,16 +412,16 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
 }
 
 #[cfg(target_os = "espidf")]
-fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
-    use usb2ble_platform_espidf::ble_hid::BleConnectionState;
+fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
+    use usb2ble_platform_espidf::ble_hid::{BleConnectionState, PersonaWireRecordingBleOutput};
     use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
     use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
-    use usb2ble_platform_espidf::usb_host::{EspUsbHostIngress, UsbIngress};
+    use usb2ble_platform_espidf::usb_host::EspUsbHostIngress;
 
-    let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedSmokeError::ProfileStore)?;
-    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedSmokeError::BondStore)?;
+    let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedDemoError::ProfileStore)?;
+    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedDemoError::BondStore)?;
     let mut uart_console =
-        EspUartBufferedConsole::new_default().map_err(EmbeddedSmokeError::Console)?;
+        EspUartBufferedConsole::new_default().map_err(EmbeddedDemoError::Console)?;
 
     let mut usb_host = match EspUsbHostIngress::new_single_client() {
         Ok(host) => Some(host),
@@ -425,6 +433,7 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
 
     let mut app = App::bootstrap(&profile_store);
     let mut console_buffer = FramedConsoleBuffer::new();
+    let mut ble_output = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
     let ble_state = BleConnectionState::Idle;
 
     let active_profile = app.runtime().active_profile();
@@ -436,59 +445,18 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
     println!("profile: {}", active_profile.as_str());
     println!("persona: {}", output_persona.as_str());
     println!("bonds: {}", if bonds_present { "present" } else { "none" });
+    println!("ble state: {:?}", ble_state);
+    println!(
+        "usb host: {}",
+        if usb_host.is_some() {
+            "initialized"
+        } else {
+            "failed (console-only mode)"
+        }
+    );
     println!("console is ready for commands");
 
     loop {
-        if let Some(ref mut host) = usb_host {
-            if let Err(e) = host.service_until_idle() {
-                println!("warning: USB host service error: {:?}", e);
-            }
-
-            while let Some(event) = host.poll_event() {
-                match event {
-                    usb2ble_platform_espidf::usb_host::UsbEvent::DeviceAttached(meta) => {
-                        println!(
-                            "usb attach: id={} vid=0x{:04X} pid=0x{:04X}",
-                            meta.device_id.raw(),
-                            meta.vendor_id,
-                            meta.product_id
-                        );
-                    }
-                    usb2ble_platform_espidf::usb_host::UsbEvent::ReportDescriptorReceived {
-                        device_id,
-                        bytes,
-                        len,
-                    } => {
-                        let preview_len = len.min(16);
-                        println!(
-                            "usb descriptor: id={} len={} preview={}",
-                            device_id.raw(),
-                            len,
-                            hex_format(&bytes[..preview_len])
-                        );
-                    }
-                    usb2ble_platform_espidf::usb_host::UsbEvent::InputReportReceived {
-                        device_id,
-                        report_id,
-                        bytes,
-                        len,
-                    } => {
-                        let preview_len = len.min(16);
-                        println!(
-                            "usb input: id={} report_id=0x{:02X} len={} preview={}",
-                            device_id.raw(),
-                            report_id,
-                            len,
-                            hex_format(&bytes[..preview_len])
-                        );
-                    }
-                    usb2ble_platform_espidf::usb_host::UsbEvent::DeviceDetached(id) => {
-                        println!("usb detach: id={}", id.raw());
-                    }
-                }
-            }
-        }
-
         if let Err(e) = uart_console.pull_rx_into(&mut console_buffer) {
             println!("recoverable RX error: {:?}", e);
         }
@@ -505,13 +473,77 @@ fn run_embedded_uart_console_smoke() -> Result<(), EmbeddedSmokeError> {
             Ok(app::BufferedConsoleOutcome::Idle) => {}
             Err(e) => {
                 println!("recoverable console error: {:?}", e);
-                // Clear the RX buffer to recover from framing/decode errors
                 console_buffer.clear_rx();
             }
         }
 
         if let Err(e) = uart_console.flush_tx_from(&mut console_buffer) {
             println!("recoverable TX error: {:?}", e);
+        }
+
+        if let Some(ref mut host) = usb_host {
+            if let Err(e) = host.service_until_idle() {
+                println!("warning: USB host service error: {:?}", e);
+            }
+
+            loop {
+                match app.service_usb_once_persona(host, &mut ble_output) {
+                    Ok(app::UsbPersonaPumpOutcome::Idle) => break,
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::DeviceAttached {
+                            device_id,
+                            vendor_id,
+                            product_id,
+                        },
+                    )) => {
+                        println!(
+                            "usb attach: id={} vid=0x{:04X} pid=0x{:04X}",
+                            device_id.raw(),
+                            vendor_id,
+                            product_id
+                        );
+                    }
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::DescriptorStored {
+                            device_id,
+                            field_count,
+                        },
+                    )) => {
+                        println!(
+                            "usb descriptor stored: id={} fields={}",
+                            device_id.raw(),
+                            field_count
+                        );
+                    }
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::InputApplied(_),
+                    )) => {
+                        // Normally we log the bridge publish instead
+                    }
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::DeviceDetached(id),
+                    )) => {
+                        println!("usb detach: id={}", id.raw());
+                    }
+                    Ok(app::UsbPersonaPumpOutcome::Handled(app::UsbServiceOutcome::Ignored)) => {}
+                    Ok(app::UsbPersonaPumpOutcome::Published {
+                        report,
+                        persona,
+                        encoded,
+                    }) => {
+                        println!(
+                            "bridge publish: persona={} {} wire={}",
+                            persona.as_str(),
+                            format_report_summary(&report),
+                            hex_format(encoded.as_bytes())
+                        );
+                    }
+                    Err(e) => {
+                        println!("warning: USB pump error: {:?}", e);
+                        break;
+                    }
+                }
+            }
         }
 
         std::thread::yield_now();
@@ -674,8 +706,8 @@ fn main() {
 
     #[cfg(target_os = "espidf")]
     {
-        if let Err(e) = run_embedded_uart_console_smoke() {
-            println!("fatal smoke initialization failure: {}", e);
+        if let Err(e) = run_embedded_bridge_demo() {
+            println!("fatal bridge demo failure: {}", e);
             loop {
                 std::thread::yield_now();
             }
@@ -727,6 +759,29 @@ mod host_demo_tests {
     fn hex_format_pads_single_digit_hex() {
         let bytes = [0x0A, 0x01, 0x0F];
         assert_eq!(hex_format(&bytes), "0A 01 0F");
+    }
+
+    #[test]
+    #[allow(dead_code)]
+    fn format_report_summary_returns_expected_concise_string() {
+        let report = GenericBleGamepad16Report {
+            x: 5,
+            y: -10,
+            rz: 0,
+            hat: HatPosition::Centered,
+            buttons: 0x0001,
+        };
+
+        let summary = format_report_summary(&report);
+        assert_eq!(summary, "x=5 y=-10 rz=0 hat=Centered buttons=0x0001");
+    }
+
+    #[test]
+    #[allow(dead_code)]
+    fn format_report_summary_handles_default_report() {
+        let report = GenericBleGamepad16Report::default();
+        let summary = format_report_summary(&report);
+        assert_eq!(summary, "x=0 y=0 rz=0 hat=Centered buttons=0x0000");
     }
 
     #[test]
@@ -1054,13 +1109,13 @@ mod host_demo_tests {
     }
 
     #[test]
-    fn embedded_smoke_error_formatting_matches_expected() {
+    fn embedded_demo_error_formatting_matches_expected() {
         use usb2ble_platform_espidf::console_uart::ConsoleError;
         use usb2ble_platform_espidf::nvs_store::StoreError;
 
-        let profile_err = EmbeddedSmokeError::ProfileStore(StoreError::BackendFailure);
-        let bond_err = EmbeddedSmokeError::BondStore(StoreError::BackendFailure);
-        let console_err = EmbeddedSmokeError::Console(ConsoleError::Transport);
+        let profile_err = EmbeddedDemoError::ProfileStore(StoreError::BackendFailure);
+        let bond_err = EmbeddedDemoError::BondStore(StoreError::BackendFailure);
+        let console_err = EmbeddedDemoError::Console(ConsoleError::Transport);
 
         assert_eq!(
             format!("{}", profile_err),
