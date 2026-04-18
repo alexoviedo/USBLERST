@@ -451,10 +451,10 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     use usb2ble_platform_espidf::ble_hid::{
         BleConnectionState, BlePersonaOutput, PersonaWireRecordingBleOutput,
     };
-    use usb2ble_platform_espidf::console_uart::{
-        EspUartBufferedConsole, FramedConsoleBuffer, ResponseSink,
+    use usb2ble_platform_espidf::console_uart::{EspUartBufferedConsole, FramedConsoleBuffer};
+    use usb2ble_platform_espidf::nvs_store::{
+        BondStore, EspNvsBondStore, EspNvsProfileStore, ProfileStore,
     };
-    use usb2ble_platform_espidf::nvs_store::{EspNvsBondStore, EspNvsProfileStore};
     use usb2ble_platform_espidf::usb_host::EspUsbHostIngress;
 
     let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedDemoError::ProfileStore)?;
@@ -475,6 +475,10 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     // Start with a structural real BLE backend, falling back to recording if unavailable.
     let mut real_ble =
         usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
+    if let Err(ref e) = real_ble {
+        println!("warning: ble backend unavailable: {}", e);
+    }
+
     let mut recording_ble = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
 
     let ble_state = if let Ok(ref b) = real_ble {
@@ -787,7 +791,7 @@ fn main() {
         if let Err(e) = run_embedded_bridge_demo() {
             println!("fatal demo initialization failure: {}", e);
             loop {
-                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_millis(1000));
             }
         }
     }
