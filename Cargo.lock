@@ -1439,7 +1439,6 @@ dependencies = [
 name = "usb2ble-platform-espidf"
 version = "0.1.0"
 dependencies = [
- "esp-idf-hal",
  "esp-idf-svc",
  "esp-idf-sys",
  "usb2ble-core",

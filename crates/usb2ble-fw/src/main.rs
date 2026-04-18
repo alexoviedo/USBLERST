@@ -477,6 +477,12 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
         usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
     let mut recording_ble = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
 
+    let ble_state = if let Ok(ref b) = real_ble {
+        b.connection_state()
+    } else {
+        recording_ble.connection_state()
+    };
+
     let active_profile = app.runtime().active_profile();
     let output_persona = active_profile.output_persona();
     let bonds_present = bond_store.bonds_present();
@@ -516,7 +522,9 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
         };
 
         // 1. Console RX -> Buffer
-        let _ = console.pull_rx_into(&mut console_buffer);
+        if let Err(e) = console.pull_rx_into(&mut console_buffer) {
+            println!("warning: uart rx error: {:?}", e);
+        }
 
         // 2. Service exactly one console command if available
         match app.service_console_buffer_once(
@@ -536,7 +544,9 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
         }
 
         // 3. Buffer -> Console TX
-        let _ = console.flush_tx_from(&mut console_buffer);
+        if let Err(e) = console.flush_tx_from(&mut console_buffer) {
+            println!("warning: uart tx error: {:?}", e);
+        }
 
         // 4. USB Host Servicing
         if let Some(ref mut usb_host) = usb_host_ingress {

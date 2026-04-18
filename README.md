@@ -30,22 +30,24 @@ This demonstrates the end-to-end app pipeline from boot through console commands
 
 ## Hardware Bridge Demo Loop
 
-For ESP-IDF targets, the firmware defaults to an on-device bridge demo loop. This milestone proves the end-to-end Rust core pipeline on real hardware: from USB HID descriptor fetching and report decoding through normalization to the final BLE output wire contract.
+For ESP-IDF targets, the firmware defaults to an on-device bridge demo loop. This milestone processes real USB HID events on-device and logs the resulting BLE output contract, proving the end-to-end Rust core pipeline on real hardware.
 
 ### How to test on hardware right now
 
 1.  **Flash and Open Console**: Flash the firmware to an ESP32-S3 and open the serial console (e.g., `espflash monitor`).
-2.  **Verify Startup**: Look for the startup banner displaying the firmware name, active profile, and backend status. Note that the BLE backend may report `RECORDING-FALLBACK (Idle)` as the hardware send path is not yet wired.
+2.  **Verify Startup**: Look for the startup banner displaying the firmware name, active profile, and backend status. Note that the BLE backend is currently in **recording-fallback** mode as the hardware send path is not yet wired.
 3.  **Connect USB HID**: Plug a supported USB HID joystick or gamepad into the ESP32-S3 USB host port.
 4.  **Observe Logs**:
     -   `usb attach`: Confirms the device was detected (includes VID/PID).
-    -   `usb descriptor stored`: Confirms the HID descriptor was successfully parsed.
-    -   `bridge publish`: Observe real-time logs as you move sticks or press buttons. These lines show the output persona, typed normalized report fields, and exact encoded BLE wire bytes.
+    -   `usb descriptor stored`: Confirms the HID descriptor was successfully parsed on-device.
+    -   `bridge publish`: Observe real-time logs as you move sticks or press buttons. These lines show the output persona, typed normalized report fields, and the exact encoded BLE wire contract.
 5.  **Interactive Commands**: Send protocol commands (e.g., `GET_STATUS`, `GET_INFO`) over UART (newline-terminated).
 
-### Current Limitations
+### Current Milestone Scope
 
--   **BLE Transport**: This milestone uses a structural recording-fallback sink. It generates the correct BLE wire contract but does not yet transmit over the radio.
+-   **Bridge Pipeline**: Full parsing, decoding, and normalization of hardware USB HID reports.
+-   **BLE Output Contract**: Deterministic encoding of BLE reports for the active persona.
+-   **BLE Transport**: Currently using a structural **recording-fallback** sink. Radio transmission is not part of this milestone.
 -   **Output Persona**: Fixed to `generic_ble_gamepad_16`.
 
 After flashing, you can interact with the firmware over the default serial console using the internal protocol commands.
