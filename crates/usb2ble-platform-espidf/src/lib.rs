@@ -3,15 +3,15 @@
 
 /// BLE HID seam contracts for lean v1.
 pub mod ble_hid;
+#[cfg(target_os = "espidf")]
+/// Real ESP-IDF BLE HID backend using Bluedroid.
+pub mod ble_hid_esp;
 /// UART console seam contracts for lean v1.
 pub mod console_uart;
 /// Profile and bond storage seam contracts for lean v1.
 pub mod nvs_store;
 /// USB host seam contracts for lean v1.
 pub mod usb_host;
-
-#[cfg(target_os = "espidf")]
-mod ble_hid_esp;
 
 /// Crate identity used by bootstrap verification.
 pub const PLATFORM_CRATE_NAME: &str = "usb2ble-platform-espidf";

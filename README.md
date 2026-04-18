@@ -18,7 +18,7 @@ USBLERST is a lean v1 Rust workspace for an ESP32-S3 USB-HID-to-BLE-gamepad brid
 
 ## Status
 
-The project is moving toward a v1 release. The core app pipeline is strong and on-device bridge demo is now functional.
+This repository is in the bootstrap phase.
 
 ## Host Demo
 
@@ -28,37 +28,23 @@ cargo run -p usb2ble-fw -- --demo-host
 ```
 This demonstrates the end-to-end app pipeline from boot through console commands and USB ingress reports to persona-encoded BLE wire bytes.
 
-## Hardware Demo Loop
+## Hardware Bridge Demo Loop
 
-For ESP-IDF targets (ESP32-S3), the firmware enters an end-to-end bridge demo loop. This proves that the Rust core can handle real hardware events on-device and publish them over a real BLE transport.
-
-After flashing, the firmware:
-- accepts UART console commands
-- detects USB HID attach/detach (with VID/PID)
-- fetches the first HID report descriptor
-- receives live HID input reports
-- routes reports through the pure-Rust bridge logic
-- publishes the resulting normalized report over a **real BLE HID backend** (generic gamepad persona)
-- logs the publication events and wire contract to the console
-
-If the real BLE backend fails to initialize, the firmware falls back to a recording-only mode so that USB processing can still be verified.
-
-### How to test
-
-1. **Flash**: Use `cargo espflash` to flash the firmware to your ESP32-S3.
-2. **Console**: Open the serial console (e.g., `espflash monitor`).
-3. **Attach USB**: Connect a supported USB HID joystick to the S3's USB port.
-4. **BLE Pairing**: On your host device (PC/Phone), look for a new BLE Gamepad. Pair with it.
-5. **Observe**: Moving the joystick should produce `bridge publish (REAL BLE)` logs in the console, and the host device should receive the gamepad events.
+For ESP-IDF targets, the firmware defaults to an on-device bridge demo loop. This proves the end-to-end Rust core pipeline on real hardware: from USB HID descriptor fetching and report decoding through normalization to the final BLE output wire contract.
 
 ### What to expect on hardware
 
-When you attach a supported joystick and are connected over BLE, you should see logs like:
-```text
-usb attach: id=1 vid=0x044F pid=0xB10A
-usb descriptor stored: id=1 fields=12
-bridge publish (REAL BLE): persona=generic_ble_gamepad_16 x=5 y=-10 rz=0 hat=Centered buttons=0x0000 wire=01 05 00 F6 FF 00 00 08 00 00
-```
+1.  **UART Console**: The firmware accepts protocol commands over the default UART (e.g., `GET_STATUS`).
+2.  **USB HID Routing**:
+    -   When a USB HID device is attached, the firmware fetches the report descriptor and stores the metadata.
+    -   Live HID input reports are received and routed through the Rust bridge logic.
+    -   **Bridge Publish Logs**: The console logs a "bridge publish" line showing the output persona, the typed normalized report fields (e.g., axes, buttons), and the exact encoded BLE wire bytes.
+3.  **BLE Backend Status**:
+    -   This milestone uses a structural BLE backend that provides the output contract but is not yet wired to a real hardware radio.
+    -   Logs will indicate `[REAL]` if a backend is initialized or `[RECORD]` if falling back to the recording sink.
+    -   The next milestone will replace this structural sink with a real BLE HID output transport.
+
+After flashing, you can interact with the firmware over the default serial console using the internal protocol commands (newline-terminated).
 
 ### Example Commands
 

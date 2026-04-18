@@ -12,6 +12,7 @@ usb2ble-proto = { path = "../usb2ble-proto" }
 [target.'cfg(target_os = "espidf")'.dependencies]
 esp-idf-svc = "0.51.0"
 esp-idf-sys = "0.36.1"
+esp-idf-hal = "0.45"
 
 [lints]
 workspace = true
