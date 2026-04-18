@@ -14,11 +14,6 @@ pub const GENERIC_BLE_GAMEPAD16_PERSONA_NAME: &str = "generic_ble_gamepad_16";
 pub const GENERIC_BLE_GAMEPAD16_REPORT_MAP_LEN: usize = 66;
 
 /// The fixed HID report descriptor for the lean v1 generic BLE gamepad persona.
-///
-/// This contract is intentionally unitless. The descriptor does not include an
-/// extra `0x64` Unit item because the v1 persona only needs a stable,
-/// backend-neutral axis/hat/button shape and does not rely on any physical-unit
-/// semantics.
 pub const GENERIC_BLE_GAMEPAD16_REPORT_MAP: [u8; GENERIC_BLE_GAMEPAD16_REPORT_MAP_LEN] = [
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x05, // Usage (Game Pad)
@@ -74,6 +69,33 @@ pub enum BlePublishError {
     Transport,
 }
 
+/// Errors that can occur during BLE stack initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BleInitError {
+    /// Controller initialization failed.
+    Controller,
+    /// Bluedroid initialization or enablement failed.
+    Bluedroid,
+    /// HID device profile initialization or registration failed.
+    HidDevice,
+    /// Advertising configuration or startup failed.
+    Advertising,
+    /// The requested persona is not supported by this backend.
+    UnsupportedPersona,
+}
+
+impl std::fmt::Display for BleInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Controller => write!(f, "controller init failed"),
+            Self::Bluedroid => write!(f, "bluedroid init failed"),
+            Self::HidDevice => write!(f, "hid device init failed"),
+            Self::Advertising => write!(f, "advertising init failed"),
+            Self::UnsupportedPersona => write!(f, "unsupported persona"),
+        }
+    }
+}
+
 /// A fixed-width encoded BLE input report ready for future transport glue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodedBleInputReport {
@@ -93,10 +115,6 @@ impl EncodedBleInputReport {
 }
 
 /// Static BLE persona metadata describing a fixed report contract.
-///
-/// At this stage the BLE layer is intentionally persona-oriented and
-/// backend-neutral: callers select fixed report contracts by
-/// `OutputPersona`, while concrete BLE stack glue comes later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlePersonaDescriptor {
     /// The output persona this BLE descriptor serves.
@@ -433,6 +451,36 @@ impl BlePersonaOutput for PersonaWireRecordingBleOutput {
 
     fn connection_state(&self) -> BleConnectionState {
         self.state
+    }
+}
+
+#[cfg(target_os = "espidf")]
+pub use crate::ble_hid_esp::EspBlePersonaOutput;
+
+#[cfg(not(target_os = "espidf"))]
+/// Stub BLE HID backend for host-side testing.
+pub struct EspBlePersonaOutput;
+
+#[cfg(not(target_os = "espidf"))]
+impl EspBlePersonaOutput {
+    /// Returns an error on host targets as real BLE is unavailable.
+    pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
+        Err(BleInitError::UnsupportedPersona)
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+impl BlePersonaOutput for EspBlePersonaOutput {
+    fn publish_encoded_report(
+        &mut self,
+        _persona: usb2ble_core::profile::OutputPersona,
+        _report: EncodedBleInputReport,
+    ) -> Result<(), BlePublishError> {
+        Err(BlePublishError::NotReady)
+    }
+
+    fn connection_state(&self) -> BleConnectionState {
+        BleConnectionState::Idle
     }
 }
 

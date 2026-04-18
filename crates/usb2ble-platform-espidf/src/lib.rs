@@ -3,6 +3,9 @@
 
 /// BLE HID seam contracts for lean v1.
 pub mod ble_hid;
+#[cfg(target_os = "espidf")]
+/// Real ESP-IDF BLE HID backend using Bluedroid.
+pub mod ble_hid_esp;
 /// UART console seam contracts for lean v1.
 pub mod console_uart;
 /// Profile and bond storage seam contracts for lean v1.
