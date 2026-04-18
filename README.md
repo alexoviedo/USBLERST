@@ -18,10 +18,10 @@ USBLERST is a lean v1 Rust workspace for an ESP32-S3 USB-HID-to-BLE-gamepad brid
 
 ## Status
 
-**Milestone: On-Device Bridge Demo Baseline**
+**Milestone: Real BLE HID Transport**
 - Full USB HID path exercised on-device (attach, descriptor fetch, live input).
 - Rust core pipeline parses, normalizes, and maps reports to the BLE contract.
-- BLE output is currently in **recording-fallback** mode (contract generated but not transmitted).
+- Real BLE HID transport active on ESP-IDF targets using Bluedroid.
 
 ## Host Demo
 
@@ -50,8 +50,15 @@ For ESP-IDF targets, the firmware defaults to an on-device bridge demo loop. Thi
 
 -   **Bridge Pipeline**: Full parsing, decoding, and normalization of hardware USB HID reports.
 -   **BLE Output Contract**: Deterministic encoding of BLE reports for the active persona.
--   **BLE Transport**: Currently using a structural **recording-fallback** sink. Radio transmission is not part of this milestone.
+-   **BLE Transport**: Real HID-over-GATT (HoG) transmission using the Bluedroid stack.
 -   **Output Persona**: Fixed to `generic_ble_gamepad_16`.
+
+### How to pair and test
+
+1.  **Enable Bluetooth**: Ensure your host device (PC/Phone/Tablet) has Bluetooth enabled.
+2.  **Enter Pairing Mode**: The ESP32-S3 starts advertising immediately as "USBLERST Gamepad" upon startup.
+3.  **Pair**: Select "USBLERST Gamepad" from your host's Bluetooth pairing menu.
+4.  **Verify**: Once connected, the firmware logs will show `ble: REAL (Connected)`. Move the sticks on your USB controller; they should now control the host device as a generic gamepad.
 
 After flashing, you can interact with the firmware over the default serial console using the internal protocol commands.
 

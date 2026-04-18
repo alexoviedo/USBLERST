@@ -472,14 +472,15 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     let mut app = App::bootstrap(&profile_store);
     let mut console_buffer = FramedConsoleBuffer::new();
 
-    // Start with a structural real BLE backend, falling back to recording if unavailable.
-    let mut real_ble =
-        usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
-    if let Err(ref e) = real_ble {
-        println!("warning: ble backend unavailable: {}", e);
-    }
-
+    // Attempt to initialize the real BLE backend.
+    let mut real_ble = usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
     let mut recording_ble = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
+
+    let is_real = real_ble.is_ok();
+    if let Err(ref e) = real_ble {
+        println!("warning: real ble backend initialization failed: {}", e);
+        println!("falling back to recording mode");
+    }
 
     let ble_state = if let Ok(ref b) = real_ble {
         b.connection_state()
@@ -505,7 +506,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     );
     println!(
         "* ble:      {}",
-        format_backend_status(real_ble.is_ok(), ble_state)
+        format_backend_status(is_real, ble_state)
     );
     println!(
         "* usb:      {}",
@@ -605,7 +606,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
                         report,
                         encoded,
                     }) => {
-                        let label = format_publish_label(real_ble.is_ok());
+                        let label = format_publish_label(is_real);
                         println!(
                             "bridge publish [{}]: persona={} {} wire={}",
                             label,
