@@ -342,7 +342,9 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
         .drain_persona_until_idle_with_runtime_state(8)
         .map_err(HostToolError::Drain)?;
     let console_outcome = match console_summary.last_non_idle_outcome {
-        Some(app::BufferedPersonaAppPumpOutcome::Console(app::BufferedConsoleOutcome::Responded(outcome))) => app::BufferedConsoleOutcome::Responded(outcome),
+        Some(app::BufferedPersonaAppPumpOutcome::Console(
+            app::BufferedConsoleOutcome::Responded(outcome),
+        )) => app::BufferedConsoleOutcome::Responded(outcome),
         _ => return Err(HostToolError::ReplayNoWork),
     };
     let console_tx = runtime.console_tx_bytes().to_vec();
@@ -422,7 +424,9 @@ fn run_host_demo() -> Result<HostDemoResult, HostToolError> {
 
 #[cfg(target_os = "espidf")]
 fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
-    use usb2ble_platform_espidf::ble_hid::{BleConnectionState, BlePersonaOutput, PersonaWireRecordingBleOutput};
+    use usb2ble_platform_espidf::ble_hid::{
+        BleConnectionState, BlePersonaOutput, PersonaWireRecordingBleOutput,
+    };
     use usb2ble_platform_espidf::console_uart::{
         EspUartBufferedConsole, FramedConsoleBuffer, ResponseSink,
     };
@@ -521,11 +525,13 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
 
                 match outcome {
                     Ok(app::UsbPersonaPumpOutcome::Idle) => break,
-                    Ok(app::UsbPersonaPumpOutcome::Handled(app::UsbServiceOutcome::DeviceAttached {
-                        device_id,
-                        vendor_id,
-                        product_id,
-                    })) => {
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::DeviceAttached {
+                            device_id,
+                            vendor_id,
+                            product_id,
+                        },
+                    )) => {
                         println!(
                             "usb attach: id={} vid=0x{:04X} pid=0x{:04X}",
                             device_id.raw(),
@@ -533,19 +539,21 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
                             product_id
                         );
                     }
-                    Ok(app::UsbPersonaPumpOutcome::Handled(app::UsbServiceOutcome::DescriptorStored {
-                        device_id,
-                        field_count,
-                    })) => {
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::DescriptorStored {
+                            device_id,
+                            field_count,
+                        },
+                    )) => {
                         println!(
                             "usb descriptor stored: id={} fields={}",
                             device_id.raw(),
                             field_count
                         );
                     }
-                    Ok(app::UsbPersonaPumpOutcome::Handled(app::UsbServiceOutcome::DeviceDetached(
-                        id,
-                    ))) => {
+                    Ok(app::UsbPersonaPumpOutcome::Handled(
+                        app::UsbServiceOutcome::DeviceDetached(id),
+                    )) => {
                         println!("usb detach: id={}", id.raw());
                     }
                     Ok(app::UsbPersonaPumpOutcome::Handled(_)) => {}
@@ -792,13 +800,17 @@ mod tests {
 
     #[test]
     fn is_recoverable_ble_error_matches_not_ready() {
-        let err = app::UsbPersonaPumpError::Ble(usb2ble_platform_espidf::ble_hid::BlePublishError::NotReady);
+        let err = app::UsbPersonaPumpError::Ble(
+            usb2ble_platform_espidf::ble_hid::BlePublishError::NotReady,
+        );
         assert!(is_recoverable_ble_error(&err));
     }
 
     #[test]
     fn is_recoverable_ble_error_rejects_transport() {
-        let err = app::UsbPersonaPumpError::Ble(usb2ble_platform_espidf::ble_hid::BlePublishError::Transport);
+        let err = app::UsbPersonaPumpError::Ble(
+            usb2ble_platform_espidf::ble_hid::BlePublishError::Transport,
+        );
         assert!(!is_recoverable_ble_error(&err));
     }
 
