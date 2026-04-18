@@ -32,6 +32,20 @@ fn get_state() -> BleConnectionState {
     }
 }
 
+/// Helper to start BLE advertising with fixed parameters for USBLERST.
+unsafe fn start_advertising() {
+    let mut adv_params: esp_idf_sys::esp_ble_adv_params_t = std::mem::zeroed();
+    adv_params.adv_int_min = 0x20;
+    adv_params.adv_int_max = 0x40;
+    adv_params.adv_type = esp_idf_sys::esp_ble_adv_type_t_ADV_TYPE_IND;
+    adv_params.own_addr_type = esp_idf_sys::esp_ble_addr_type_t_BLE_ADDR_TYPE_PUBLIC;
+    adv_params.channel_map = esp_idf_sys::esp_ble_adv_channel_t_ADV_CHNL_ALL;
+    adv_params.adv_filter_policy =
+        esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+
+    esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params);
+}
+
 /// Structural ESP-IDF BLE persona output using Bluedroid HID Device API.
 pub struct EspBlePersonaOutput {
     // We keep this to satisfy the trait and potential future per-instance state.
@@ -138,7 +152,10 @@ impl EspBlePersonaOutput {
 
             // We'll try to set this config. If this function doesn't exist, cargo check will tell us.
             // In many examples, it's esp_hidd_dev_config_set.
-            esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config);
+            let res = esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config);
+            if res != esp_idf_sys::ESP_OK {
+                return Err(BleInitError::HidDevice);
+            }
 
             Ok(Self {})
         }
@@ -203,22 +220,15 @@ unsafe extern "C" fn hidd_event_callback(
 ) {
     match event {
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_REG_FINISH => {
-            let mut adv_params: esp_idf_sys::esp_ble_adv_params_t = std::mem::zeroed();
-            adv_params.adv_int_min = 0x20;
-            adv_params.adv_int_max = 0x40;
-            adv_params.adv_type = esp_idf_sys::esp_ble_adv_type_t_ADV_TYPE_IND;
-            adv_params.own_addr_type = esp_idf_sys::esp_ble_addr_type_t_BLE_ADDR_TYPE_PUBLIC;
-            adv_params.channel_map = esp_idf_sys::esp_ble_adv_channel_t_ADV_CHNL_ALL;
-            adv_params.adv_filter_policy =
-                esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
-
-            esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params);
+            start_advertising();
         }
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_CONNECT => {
             set_state(BleConnectionState::Connected);
         }
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_DISCONNECT => {
             set_state(BleConnectionState::Idle);
+            // Restart advertising upon disconnect as requested.
+            start_advertising();
         }
         _ => {}
     }
