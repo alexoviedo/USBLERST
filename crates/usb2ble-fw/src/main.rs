@@ -129,6 +129,30 @@ fn is_recoverable_ble_error(err: &app::UsbPersonaPumpError) -> bool {
     )
 }
 
+/// Formats the BLE backend status for the startup banner.
+#[cfg(any(target_os = "espidf", test))]
+fn format_backend_status(
+    is_real: bool,
+    state: usb2ble_platform_espidf::ble_hid::BleConnectionState,
+) -> String {
+    let mode = if is_real {
+        "REAL"
+    } else {
+        "RECORDING-FALLBACK"
+    };
+    format!("{} ({:?})", mode, state)
+}
+
+/// Formats the bridge publish label based on backend reality.
+#[cfg(any(target_os = "espidf", test))]
+fn format_publish_label(is_real: bool) -> &'static str {
+    if is_real {
+        "REAL"
+    } else {
+        "FALLBACK"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReplayCommand {
     Attach {
@@ -434,7 +458,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     use usb2ble_platform_espidf::usb_host::EspUsbHostIngress;
 
     let mut profile_store = EspNvsProfileStore::new().map_err(EmbeddedDemoError::ProfileStore)?;
-    let bond_store = EspNvsBondStore::new().map_err(EmbeddedDemoError::BondStore)?;
+    let mut bond_store = EspNvsBondStore::new().map_err(EmbeddedDemoError::BondStore)?;
     let mut console = EspUartBufferedConsole::new_default().map_err(EmbeddedDemoError::Console)?;
 
     let mut usb_host_ingress = match EspUsbHostIngress::new_single_client() {
@@ -458,17 +482,20 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     let bonds_present = bond_store.bonds_present();
 
     println!("*****************************************");
-    println!("* firmware: {}", app::APP_NAME);
-    println!("* profile:  {:?}", active_profile);
-    println!("* persona:  {:?}", output_persona);
-    println!("* bonds:    {}", bonds_present);
+    println!(
+        "* firmware: {} v{}",
+        app::APP_NAME,
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("* profile:  {}", active_profile.as_str());
+    println!("* persona:  {}", output_persona.as_str());
+    println!(
+        "* bonds:    {}",
+        if bonds_present { "PRESENT" } else { "NONE" }
+    );
     println!(
         "* ble:      {}",
-        if let Ok(ref b) = real_ble {
-            format!("REAL ({:?})", b.connection_state())
-        } else {
-            "RECORDING-FALLBACK".to_string()
-        }
+        format_backend_status(real_ble.is_ok(), ble_state)
     );
     println!(
         "* usb:      {}",
@@ -478,7 +505,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
             "UNAVAILABLE"
         }
     );
-    println!("* console:  READY");
+    println!("* console:  READY (newline-terminated)");
     println!("*****************************************");
 
     loop {
@@ -513,7 +540,9 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
 
         // 4. USB Host Servicing
         if let Some(ref mut usb_host) = usb_host_ingress {
-            let _ = usb_host.service_until_idle();
+            if let Err(e) = usb_host.service_until_idle() {
+                println!("warning: usb service error: {:?}", e);
+            }
 
             // 5. Drain all available USB events through the app/runtime bridge logic
             loop {
@@ -562,28 +591,30 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
                         report,
                         encoded,
                     }) => {
-                        let ble_type = if real_ble.is_ok() { "REAL" } else { "RECORD" };
+                        let label = format_publish_label(real_ble.is_ok());
                         println!(
-                            "bridge publish [{}]: persona={:?} {} wire={}",
-                            ble_type,
-                            persona,
+                            "bridge publish [{}]: persona={} {} wire={}",
+                            label,
+                            persona.as_str(),
                             format_report_summary(&report),
                             hex_format(encoded.as_bytes())
                         );
                     }
                     Err(e) => {
                         if is_recoverable_ble_error(&e) {
-                            println!("recoverable USB pump error: {:?}", e);
+                            // Recoverable BLE NotReady is common when disconnected; log concisely.
+                            println!("usb publish: not ready");
                             continue;
                         }
-                        println!("warning: pump error: {:?}", e);
+                        println!("warning: usb pump error: {:?}", e);
                         break;
                     }
                 }
             }
         }
 
-        std::thread::yield_now();
+        // Yield to allow other tasks (like IDLE) to run and prevent WDT triggers.
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
@@ -1148,6 +1179,25 @@ mod tests {
             other => panic!("expected Info response, got {:?}", other),
         }
         assert!(!res.console_tx.is_empty());
+    }
+
+    #[test]
+    fn format_backend_status_matches_expected() {
+        use usb2ble_platform_espidf::ble_hid::BleConnectionState;
+        assert_eq!(
+            format_backend_status(true, BleConnectionState::Connected),
+            "REAL (Connected)"
+        );
+        assert_eq!(
+            format_backend_status(false, BleConnectionState::Idle),
+            "RECORDING-FALLBACK (Idle)"
+        );
+    }
+
+    #[test]
+    fn format_publish_label_matches_expected() {
+        assert_eq!(format_publish_label(true), "REAL");
+        assert_eq!(format_publish_label(false), "FALLBACK");
     }
 
     #[test]
