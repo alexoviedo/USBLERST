@@ -473,7 +473,8 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     let mut console_buffer = FramedConsoleBuffer::new();
 
     // Attempt to initialize the real BLE backend.
-    let mut real_ble = usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
+    let mut real_ble =
+        usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
     let mut recording_ble = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
 
     let is_real = real_ble.is_ok();
@@ -504,10 +505,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
         "* bonds:    {}",
         if bonds_present { "PRESENT" } else { "NONE" }
     );
-    println!(
-        "* ble:      {}",
-        format_backend_status(is_real, ble_state)
-    );
+    println!("* ble:      {}", format_backend_status(is_real, ble_state));
     println!(
         "* usb:      {}",
         if usb_host_ingress.is_some() {

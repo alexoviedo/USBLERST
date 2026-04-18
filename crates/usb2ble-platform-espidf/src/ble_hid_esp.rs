@@ -83,7 +83,8 @@ impl EspBlePersonaOutput {
                 return Err(BleInitError::Controller);
             }
 
-            let res = esp_idf_sys::esp_bt_controller_enable(esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE);
+            let res =
+                esp_idf_sys::esp_bt_controller_enable(esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE);
             if res != esp_idf_sys::ESP_OK {
                 return Err(BleInitError::Controller);
             }
@@ -128,7 +129,7 @@ impl EspBlePersonaOutput {
                 vendor_id: 0xdead,
                 product_id: 0xbeef,
                 version: 0x0100,
-                appearance: 0x03C4, // Generic Gamepad
+                appearance: 0x03C4,  // Generic Gamepad
                 protocol_mode: 0x01, // Report Protocol
                 report_map: GENERIC_BLE_GAMEPAD16_REPORT_MAP.as_ptr() as *mut u8,
                 report_map_len: GENERIC_BLE_GAMEPAD16_REPORT_MAP.len() as u16,
@@ -208,7 +209,8 @@ unsafe extern "C" fn hidd_event_callback(
             adv_params.adv_type = esp_idf_sys::esp_ble_adv_type_t_ADV_TYPE_IND;
             adv_params.own_addr_type = esp_idf_sys::esp_ble_addr_type_t_BLE_ADDR_TYPE_PUBLIC;
             adv_params.channel_map = esp_idf_sys::esp_ble_adv_channel_t_ADV_CHNL_ALL;
-            adv_params.adv_filter_policy = esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+            adv_params.adv_filter_policy =
+                esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
 
             esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params);
         }
