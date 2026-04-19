@@ -58,10 +58,11 @@ jobs:
           targets: xtensa-esp32s3-espidf
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: cargo check -p usb2ble-platform-espidf
+      - name: cargo check -p usb2ble-platform-espidf (target-aware)
         env:
-          # We enable the target_os and chip cfgs to force compilation of the embedded path.
-          # This ensures symbols are checked even when running on a host runner.
+          # This job validates the embedded code path by enabling target-specific cfgs.
+          # Note: A full xtensa-esp32s3-espidf build requires a specialized runner/container,
+          # but checking with cfgs provides the strongest honest validation in this workflow.
           RUSTFLAGS: "--cfg target_os=\\"espidf\\" --cfg esp32s3"
         run: cargo check -p usb2ble-platform-espidf
 
