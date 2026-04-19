@@ -14,6 +14,7 @@ static CONNECTION_STATE: AtomicU8 = AtomicU8::new(STATE_IDLE);
 const STATE_IDLE: u8 = 0;
 const STATE_ADVERTISING: u8 = 1;
 const STATE_CONNECTED: u8 = 2;
+const STATE_INIT_FAILED: u8 = 3;
 
 fn set_state(state: BleConnectionState) {
     let val = match state {
@@ -24,12 +25,20 @@ fn set_state(state: BleConnectionState) {
     CONNECTION_STATE.store(val, Ordering::SeqCst);
 }
 
+fn set_init_failed() {
+    CONNECTION_STATE.store(STATE_INIT_FAILED, Ordering::SeqCst);
+}
+
 fn get_state() -> BleConnectionState {
     match CONNECTION_STATE.load(Ordering::SeqCst) {
         STATE_ADVERTISING => BleConnectionState::Advertising,
         STATE_CONNECTED => BleConnectionState::Connected,
         _ => BleConnectionState::Idle,
     }
+}
+
+fn is_init_failed() -> bool {
+    CONNECTION_STATE.load(Ordering::SeqCst) == STATE_INIT_FAILED
 }
 
 /// Helper to start BLE advertising with fixed parameters for USBLERST.
@@ -58,8 +67,9 @@ impl EspBlePersonaOutput {
             // 1. Initialize Bluetooth Controller
             // Best-effort initialization for ESP32-S3 avoiding mem::zeroed if possible.
             // Since we don't have the macro, we populate the known required fields for S3.
+            // The magic values are updated to the most common ones in current ESP-IDF versions.
             let mut bt_cfg = esp_idf_sys::esp_bt_controller_config_t {
-                magic: 0x20220615, // ESP_BT_CTRL_CONFIG_MAGIC_VAL
+                magic: 0x20230621, // ESP_BT_CTRL_CONFIG_MAGIC_VAL (updated)
                 version: 0x01,     // ESP_BT_CTRL_CONFIG_VERSION
                 controller_task_stack_size: 4096,
                 controller_task_prio: 20,
@@ -198,6 +208,10 @@ impl BlePersonaOutput for EspBlePersonaOutput {
     }
 
     fn connection_state(&self) -> BleConnectionState {
+        if is_init_failed() {
+            // Asynchronous initialization failure reported as Idle (NotReady).
+            return BleConnectionState::Idle;
+        }
         get_state()
     }
 }
@@ -216,11 +230,21 @@ unsafe extern "C" fn gap_event_callback(
 
 unsafe extern "C" fn hidd_event_callback(
     event: esp_idf_sys::esp_hidd_cb_event_t,
-    _param: *mut esp_idf_sys::esp_hidd_cb_param_t,
+    param: *mut esp_idf_sys::esp_hidd_cb_param_t,
 ) {
     match event {
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_REG_FINISH => {
-            start_advertising();
+            // Check HID init result before treating backend as ready.
+            if !param.is_null() {
+                let status = (*param).reg_finish.state;
+                if status == esp_idf_sys::esp_hidd_init_state_t_ESP_HIDD_INIT_OK {
+                    start_advertising();
+                } else {
+                    set_init_failed();
+                }
+            } else {
+                set_init_failed();
+            }
         }
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_CONNECT => {
             set_state(BleConnectionState::Connected);
