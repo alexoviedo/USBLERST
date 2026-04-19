@@ -53,25 +53,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Prepare environment
+        # Remove rust-toolchain.toml before any toolchain actions to prevent overrides.
+        run: rm rust-toolchain.toml
       - name: Install Rust for Xtensa
         uses: esp-rs/xtensa-toolchain@v1.5
         with:
           default: true
           buildtargets: esp32s3
-          ldproxy: false
+          ldproxy: true
       - uses: Swatinem/rust-cache@v2
       - name: cargo check -p usb2ble-platform-espidf --target xtensa-esp32s3-espidf
         # Note: A full build requires the ESP-IDF SDK.
         # Running `cargo check` with the real Xtensa toolchain and target is the strongest honest
         # validation possible without a full ESP-IDF environment. It verifies target-specific
         # code compiles for the correct architecture using the supported fork.
-        # We explicitly use the 'esp' toolchain and remove the workspace's rust-toolchain.toml
-        # to ensure the Xtensa-capable fork is used.
+        # We explicitly use the 'esp' toolchain and build-std to ensure core/std are available
+        # for this Tier 3 target.
         env:
           RUSTUP_TOOLCHAIN: esp
-        run: |
-          rm rust-toolchain.toml
-          cargo check -p usb2ble-platform-espidf --target xtensa-esp32s3-espidf
+        run: cargo check -p usb2ble-platform-espidf --target xtensa-esp32s3-espidf -Zbuild-std
 
   test:
     runs-on: ubuntu-latest

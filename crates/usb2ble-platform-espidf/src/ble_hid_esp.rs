@@ -108,14 +108,21 @@ impl EspBlePersonaOutput {
         // SAFETY: Initializing the Bluedroid stack.
         let res = unsafe { esp_idf_sys::esp_bluedroid_init() };
         if res != esp_idf_sys::ESP_OK {
-            Self::deinit_stack();
+            unsafe {
+                let _ = esp_idf_sys::esp_bt_controller_disable();
+                let _ = esp_idf_sys::esp_bt_controller_deinit();
+            }
             return Err(BleInitError::Bluedroid);
         }
 
         // SAFETY: Enabling the Bluedroid stack.
         let res = unsafe { esp_idf_sys::esp_bluedroid_enable() };
         if res != esp_idf_sys::ESP_OK {
-            Self::deinit_stack();
+            unsafe {
+                let _ = esp_idf_sys::esp_bluedroid_deinit();
+                let _ = esp_idf_sys::esp_bt_controller_disable();
+                let _ = esp_idf_sys::esp_bt_controller_deinit();
+            }
             return Err(BleInitError::Bluedroid);
         }
 
