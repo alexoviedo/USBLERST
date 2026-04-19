@@ -58,6 +58,8 @@ pub enum BleConnectionState {
     Advertising,
     /// The BLE persona is connected.
     Connected,
+    /// The BLE persona failed to initialize (async failure).
+    InitializationFailed,
 }
 
 /// Errors that can occur when publishing a BLE report.
