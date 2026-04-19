@@ -84,11 +84,36 @@ impl EspBlePersonaOutput {
         let mut bt_cfg: esp_idf_sys::esp_bt_controller_config_t = unsafe { std::mem::zeroed() };
 
         // Population using SDK-supported magic values and constants.
+        // These match the defaults for ESP32-S3 in ESP-IDF v5.x.
         bt_cfg.magic = esp_idf_sys::ESP_BT_CTRL_CONFIG_MAGIC_VAL;
         bt_cfg.version = esp_idf_sys::ESP_BT_CTRL_CONFIG_VERSION;
         bt_cfg.controller_task_stack_size = esp_idf_sys::ESP_TASK_BT_CONTROLLER_STACK as u16;
         bt_cfg.controller_task_prio = esp_idf_sys::ESP_TASK_BT_CONTROLLER_PRIO as u8;
+        bt_cfg.controller_task_run_cpu = esp_idf_sys::CONFIG_BT_CTRL_PINNED_TO_CORE as u8;
         bt_cfg.bluetooth_mode = esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE as u8;
+        bt_cfg.ble_max_act = esp_idf_sys::CONFIG_BT_CTRL_BLE_MAX_ACT_EFF as u8;
+        bt_cfg.sleep_mode = esp_idf_sys::CONFIG_BT_CTRL_SLEEP_MODE_EFF as u8;
+        bt_cfg.sleep_clock = esp_idf_sys::CONFIG_BT_CTRL_SLEEP_CLOCK_EFF as u8;
+        bt_cfg.ble_st_acl_tx_buf_nb = esp_idf_sys::CONFIG_BT_CTRL_BLE_STATIC_ACL_TX_BUF_NB as u8;
+        bt_cfg.ble_hw_cca_check = esp_idf_sys::CONFIG_BT_CTRL_HW_CCA_EFF as u8;
+        bt_cfg.ble_adv_dup_filt_max = esp_idf_sys::CONFIG_BT_CTRL_ADV_DUP_FILT_MAX as u16;
+        bt_cfg.ce_len_type = esp_idf_sys::CONFIG_BT_CTRL_CE_LENGTH_TYPE_EFF as u8;
+        bt_cfg.hci_tl_type = esp_idf_sys::CONFIG_BT_CTRL_HCI_TL_EFF as u8;
+        bt_cfg.hci_tl_funcs = std::ptr::null_mut();
+        bt_cfg.txant_dft = esp_idf_sys::CONFIG_BT_CTRL_TX_ANTENNA_INDEX_EFF as u8;
+        bt_cfg.rxant_dft = esp_idf_sys::CONFIG_BT_CTRL_RX_ANTENNA_INDEX_EFF as u8;
+        bt_cfg.txpwr_dft = esp_idf_sys::CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_EFF as u8;
+        bt_cfg.cfg_mask = esp_idf_sys::CFG_MASK as u32;
+        bt_cfg.scan_duplicate_mode = esp_idf_sys::SCAN_DUPLICATE_MODE as u8;
+        bt_cfg.scan_duplicate_type = esp_idf_sys::SCAN_DUPLICATE_TYPE_VALUE as u8;
+        bt_cfg.normal_adv_size = esp_idf_sys::NORMAL_SCAN_DUPLICATE_CACHE_SIZE as u16;
+        bt_cfg.mesh_adv_size = esp_idf_sys::MESH_DUPLICATE_SCAN_CACHE_SIZE as u16;
+        bt_cfg.coex_phy_coded_tx_rx_time_limit =
+            esp_idf_sys::CONFIG_BT_CTRL_COEX_PHY_CODED_TX_RX_TLIM_EFF as u8;
+        bt_cfg.hw_target_code = esp_idf_sys::BLE_HW_TARGET_CODE_CHIP_ECO0 as u32;
+        bt_cfg.slave_ce_len_min = esp_idf_sys::SLAVE_CE_LEN_MIN_DEFAULT as u16;
+        bt_cfg.hw_recorrect_en = esp_idf_sys::AGC_RECORRECT_EN as u8;
+        bt_cfg.cca_thresh = esp_idf_sys::CONFIG_BT_CTRL_HW_CCA_VAL as u8;
 
         // SAFETY: Initializing the BT controller via FFI.
         let res = unsafe { esp_idf_sys::esp_bt_controller_init(&mut bt_cfg) };
@@ -288,7 +313,11 @@ unsafe extern "C" fn gap_event_callback(
                     unsafe {
                         start_advertising();
                     }
+                } else {
+                    set_init_failed();
                 }
+            } else {
+                set_init_failed();
             }
         }
         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_ADV_START_COMPLETE_EVT => {
