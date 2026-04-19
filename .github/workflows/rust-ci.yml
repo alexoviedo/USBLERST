@@ -59,6 +59,8 @@ jobs:
           buildtargets: esp32s3
           ldproxy: false
       - uses: Swatinem/rust-cache@v2
+      - name: Remove rust-toolchain.toml to allow using the custom Xtensa toolchain
+        run: rm rust-toolchain.toml
       - name: cargo check -p usb2ble-platform-espidf (real target)
         run: cargo check -p usb2ble-platform-espidf --target xtensa-esp32s3-espidf
 
