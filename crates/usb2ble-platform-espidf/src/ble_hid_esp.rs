@@ -30,6 +30,7 @@ fn set_state(state: BleConnectionState) {
 
 fn set_init_failed() {
     CONNECTION_STATE.store(STATE_INIT_FAILED, Ordering::SeqCst);
+    CONNECTION_HANDLE.store(0, Ordering::SeqCst);
 }
 
 fn get_state() -> BleConnectionState {
@@ -76,6 +77,8 @@ pub struct EspBlePersonaOutput {
 impl EspBlePersonaOutput {
     /// Attempts to initialize the BLE stack and register the generic gamepad v1 persona.
     pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
+        CONNECTION_HANDLE.store(0, Ordering::SeqCst);
+
         // 1. Initialize Bluetooth Controller
         // SAFETY: esp_bt_controller_config_t must be initialized before use.
         let mut bt_cfg: esp_idf_sys::esp_bt_controller_config_t = unsafe { std::mem::zeroed() };
@@ -101,6 +104,7 @@ impl EspBlePersonaOutput {
             unsafe {
                 let _ = esp_idf_sys::esp_bt_controller_deinit();
             }
+            CONNECTION_HANDLE.store(0, Ordering::SeqCst);
             return Err(BleInitError::Controller);
         }
 
@@ -190,6 +194,7 @@ impl EspBlePersonaOutput {
             let _ = esp_idf_sys::esp_bt_controller_disable();
             let _ = esp_idf_sys::esp_bt_controller_deinit();
         }
+        CONNECTION_HANDLE.store(0, Ordering::SeqCst);
     }
 }
 
