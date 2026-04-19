@@ -1,6 +1,6 @@
 //! Real ESP-IDF BLE HID backend using Bluedroid.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
 use crate::ble_hid::{
     BleConnectionState, BleInitError, BlePersonaOutput, BlePublishError, EncodedBleInputReport,
@@ -17,7 +17,7 @@ const STATE_CONNECTED: u8 = 2;
 const STATE_INIT_FAILED: u8 = 3;
 
 /// Tracks the active BLE connection handle.
-static CONNECTION_HANDLE: AtomicU8 = AtomicU8::new(0);
+static CONNECTION_HANDLE: AtomicU16 = AtomicU16::new(0);
 
 fn set_state(state: BleConnectionState) {
     let val = match state {
@@ -62,8 +62,9 @@ unsafe fn start_advertising() {
         esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
 
     // SAFETY: esp_ble_gap_start_advertising is a FFI call to the ESP-IDF SDK.
-    unsafe {
-        esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params);
+    let res = unsafe { esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params) };
+    if res != esp_idf_sys::ESP_OK {
+        set_init_failed();
     }
 }
 
@@ -76,19 +77,15 @@ impl EspBlePersonaOutput {
     /// Attempts to initialize the BLE stack and register the generic gamepad v1 persona.
     pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
         // 1. Initialize Bluetooth Controller
-        // We use a zeroed config and rely on SDK defaults where possible.
-        // On ESP32-S3, specific magic values are required by the controller stack.
-        // These values are derived from current ESP-IDF v5.x defaults.
         // SAFETY: esp_bt_controller_config_t must be initialized before use.
         let mut bt_cfg: esp_idf_sys::esp_bt_controller_config_t = unsafe { std::mem::zeroed() };
 
-        // Best-effort population using SDK-supported magic values and constants.
-        // These constants are provided by the esp_idf_sys bindings.
-        // We use the same values as the esp-idf-svc crate for consistency.
-        bt_cfg.magic = 0x5A5AA5A5; // Generic magic used in many ESP-IDF versions
-        bt_cfg.controller_task_stack_size = 4096;
-        bt_cfg.controller_task_prio = 20;
-        bt_cfg.bluetooth_mode = 0x01; // ESP_BT_MODE_BLE
+        // Population using SDK-supported magic values and constants.
+        bt_cfg.magic = esp_idf_sys::ESP_BT_CTRL_CONFIG_MAGIC_VAL;
+        bt_cfg.version = esp_idf_sys::ESP_BT_CTRL_CONFIG_VERSION;
+        bt_cfg.controller_task_stack_size = esp_idf_sys::ESP_TASK_BT_CONTROLLER_STACK as u16;
+        bt_cfg.controller_task_prio = esp_idf_sys::ESP_TASK_BT_CONTROLLER_PRIO as u8;
+        bt_cfg.bluetooth_mode = esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE as u8;
 
         // SAFETY: Initializing the BT controller via FFI.
         let res = unsafe { esp_idf_sys::esp_bt_controller_init(&mut bt_cfg) };
@@ -101,6 +98,9 @@ impl EspBlePersonaOutput {
             esp_idf_sys::esp_bt_controller_enable(esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE)
         };
         if res != esp_idf_sys::ESP_OK {
+            unsafe {
+                let _ = esp_idf_sys::esp_bt_controller_deinit();
+            }
             return Err(BleInitError::Controller);
         }
 
@@ -108,41 +108,48 @@ impl EspBlePersonaOutput {
         // SAFETY: Initializing the Bluedroid stack.
         let res = unsafe { esp_idf_sys::esp_bluedroid_init() };
         if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
             return Err(BleInitError::Bluedroid);
         }
 
         // SAFETY: Enabling the Bluedroid stack.
         let res = unsafe { esp_idf_sys::esp_bluedroid_enable() };
         if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
             return Err(BleInitError::Bluedroid);
         }
 
-        // 3. Register Callbacks
-        // SAFETY: Registering FFI callbacks for HID events.
-        let res = unsafe { esp_idf_sys::esp_hidd_register_callbacks(Some(hidd_event_callback)) };
-        if res != esp_idf_sys::ESP_OK {
-            return Err(BleInitError::HidDevice);
-        }
-
-        // 4. Initialize HID Device Profile
-        // SAFETY: Initializing the HID profile.
-        let res = unsafe { esp_idf_sys::esp_hidd_profile_init() };
-        if res != esp_idf_sys::ESP_OK {
-            return Err(BleInitError::HidDevice);
-        }
-
-        // 5. Register GAP callback
+        // 3. Register GAP callback
         // SAFETY: Registering FFI callbacks for GAP events.
         let res = unsafe { esp_idf_sys::esp_ble_gap_register_callback(Some(gap_event_callback)) };
         if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
             return Err(BleInitError::Advertising);
+        }
+
+        // 4. Register HID Callbacks
+        // SAFETY: Registering FFI callbacks for HID events.
+        let res = unsafe { esp_idf_sys::esp_hidd_register_callbacks(Some(hidd_event_callback)) };
+        if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
+            return Err(BleInitError::HidDevice);
+        }
+
+        // 5. Initialize HID Device Profile
+        // SAFETY: Initializing the HID profile.
+        let res = unsafe { esp_idf_sys::esp_hidd_profile_init() };
+        if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
+            return Err(BleInitError::HidDevice);
         }
 
         // 6. Set Device Name
         let name = b"USBLERST Gamepad\0";
         // SAFETY: Setting the BLE device name.
-        unsafe {
-            esp_idf_sys::esp_ble_gap_set_device_name(name.as_ptr() as *const i8);
+        let res = unsafe { esp_idf_sys::esp_ble_gap_set_device_name(name.as_ptr() as *const i8) };
+        if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
+            return Err(BleInitError::Advertising);
         }
 
         // 7. Configure HID Device
@@ -159,10 +166,23 @@ impl EspBlePersonaOutput {
         // SAFETY: Setting the HID device configuration.
         let res = unsafe { esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config) };
         if res != esp_idf_sys::ESP_OK {
+            Self::deinit_stack();
             return Err(BleInitError::HidDevice);
         }
 
         Ok(Self {})
+    }
+
+    /// Best-effort cleanup of the BLE stack on initialization failure.
+    fn deinit_stack() {
+        // SAFETY: These are FFI calls to deinitialize the BLE stack.
+        // We ignore return values during best-effort cleanup.
+        unsafe {
+            let _ = esp_idf_sys::esp_bluedroid_disable();
+            let _ = esp_idf_sys::esp_bluedroid_deinit();
+            let _ = esp_idf_sys::esp_bt_controller_disable();
+            let _ = esp_idf_sys::esp_bt_controller_deinit();
+        }
     }
 }
 
@@ -190,7 +210,7 @@ impl BlePersonaOutput for EspBlePersonaOutput {
         // We use the handle captured during the BLE_CONNECT event.
         let res = unsafe {
             esp_idf_sys::esp_hidd_dev_input_report_send(
-                handle as i32,
+                handle,
                 report_id as i32,
                 data.as_ptr() as *mut u8,
                 data.len() as i32,
@@ -205,10 +225,17 @@ impl BlePersonaOutput for EspBlePersonaOutput {
     }
 
     fn connection_state(&self) -> BleConnectionState {
-        if is_init_failed() {
+        if self.is_failed() {
             return BleConnectionState::Idle;
         }
         get_state()
+    }
+}
+
+impl EspBlePersonaOutput {
+    /// Returns true if the backend has entered a terminal failure state.
+    pub fn is_failed(&self) -> bool {
+        is_init_failed()
     }
 }
 
@@ -228,8 +255,9 @@ unsafe fn config_adv_data() {
     adv_data.service_uuid_len = 0;
 
     // SAFETY: esp_ble_gap_config_adv_data is a FFI call to the ESP-IDF SDK.
-    unsafe {
-        esp_idf_sys::esp_ble_gap_config_adv_data(&mut adv_data);
+    let res = unsafe { esp_idf_sys::esp_ble_gap_config_adv_data(&mut adv_data) };
+    if res != esp_idf_sys::ESP_OK {
+        set_init_failed();
     }
 }
 
@@ -292,7 +320,7 @@ unsafe extern "C" fn hidd_event_callback(
             // SAFETY: Dereferencing param after null check to get connection handle.
             if !param.is_null() {
                 let handle = unsafe { (*param).connect.conn_id };
-                CONNECTION_HANDLE.store(handle as u8, Ordering::SeqCst);
+                CONNECTION_HANDLE.store(handle, Ordering::SeqCst);
             }
             set_state(BleConnectionState::Connected);
         }
