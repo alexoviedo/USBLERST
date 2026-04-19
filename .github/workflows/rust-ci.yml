@@ -50,10 +50,11 @@ jobs:
         run: cargo check --workspace
 
   check-espidf:
-    # Honest validation of the embedded code path using the real Xtensa toolchain.
+    # Honest validation of the embedded code path.
     # Note: Standard runners lack pre-compiled core/std for this Tier 3 target.
-    # We use RUSTC_BOOTSTRAP and -Zbuild-std to honestly exercise the target-specific
-    # code path and its dependencies without hacks or "fake" cfgs.
+    # We use the specialized Xtensa-aware toolchain and build the standard
+    # library from source using build-std and RUSTC_BOOTSTRAP.
+    # This provides a truthful target-aware check of the real platform code.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

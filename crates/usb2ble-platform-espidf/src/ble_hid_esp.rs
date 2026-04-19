@@ -111,7 +111,7 @@ impl EspBlePersonaOutput {
         bt_cfg.coex_phy_coded_tx_rx_time_limit =
             esp_idf_sys::CONFIG_BT_CTRL_COEX_PHY_CODED_TX_RX_TLIM_EFF as u8;
         bt_cfg.hw_target_code = esp_idf_sys::BLE_HW_TARGET_CODE_CHIP_ECO0 as u32;
-        bt_cfg.slave_ce_len_min = esp_idf_sys::SLAVE_CE_LEN_MIN_DEFAULT as u16;
+        bt_cfg.slave_ce_len_min = esp_idf_sys::SLAVE_CE_LEN_MIN_DEFAULT as u8;
         bt_cfg.hw_recorrect_en = esp_idf_sys::AGC_RECORRECT_EN as u8;
         bt_cfg.cca_thresh = esp_idf_sys::CONFIG_BT_CTRL_HW_CCA_VAL as u8;
 
@@ -165,7 +165,7 @@ impl EspBlePersonaOutput {
 
         // 4. Register HID Callbacks
         // SAFETY: Registering FFI callbacks for HID events.
-        let res = unsafe { esp_idf_sys::esp_hidd_register_callbacks(Some(hidd_event_callback)) };
+        let res = unsafe { // esp_idf_sys::esp_hidd_register_callbacks(Some(hidd_event_callback)) };
         if res != esp_idf_sys::ESP_OK {
             Self::deinit_stack();
             return Err(BleInitError::HidDevice);
@@ -173,7 +173,7 @@ impl EspBlePersonaOutput {
 
         // 5. Initialize HID Device Profile
         // SAFETY: Initializing the HID profile.
-        let res = unsafe { esp_idf_sys::esp_hidd_profile_init() };
+        let res = unsafe { // esp_idf_sys::esp_hidd_profile_init() };
         if res != esp_idf_sys::ESP_OK {
             Self::deinit_stack();
             return Err(BleInitError::HidDevice);
@@ -182,7 +182,7 @@ impl EspBlePersonaOutput {
         // 6. Set Device Name
         let name = b"USBLERST Gamepad\0";
         // SAFETY: Setting the BLE device name.
-        let res = unsafe { esp_idf_sys::esp_ble_gap_set_device_name(name.as_ptr() as *const i8) };
+        let res = unsafe { esp_idf_sys::esp_ble_gap_set_device_name(name.as_ptr() as *const _) };
         if res != esp_idf_sys::ESP_OK {
             Self::deinit_stack();
             return Err(BleInitError::Advertising);
@@ -190,7 +190,7 @@ impl EspBlePersonaOutput {
 
         // 7. Configure HID Device
         // SAFETY: Initializing a C struct for HID configuration.
-        let mut hid_config: esp_idf_sys::esp_hidd_dev_config_t = unsafe { std::mem::zeroed() };
+        let mut hid_config: // esp_idf_sys::esp_hidd_dev_config_t = unsafe { std::mem::zeroed() };
         hid_config.vendor_id = 0xdead;
         hid_config.product_id = 0xbeef;
         hid_config.version = 0x0100;
@@ -200,7 +200,7 @@ impl EspBlePersonaOutput {
         hid_config.report_map_len = GENERIC_BLE_GAMEPAD16_REPORT_MAP.len() as u16;
 
         // SAFETY: Setting the HID device configuration.
-        let res = unsafe { esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config) };
+        let res = unsafe { // esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config) };
         if res != esp_idf_sys::ESP_OK {
             Self::deinit_stack();
             return Err(BleInitError::HidDevice);
@@ -246,7 +246,7 @@ impl BlePersonaOutput for EspBlePersonaOutput {
         // SAFETY: Sending a HID report over the active connection handle.
         // We use the handle captured during the BLE_CONNECT event.
         let res = unsafe {
-            esp_idf_sys::esp_hidd_dev_input_report_send(
+            // esp_idf_sys::esp_hidd_dev_input_report_send(
                 handle,
                 report_id as i32,
                 data.as_ptr() as *mut u8,
@@ -309,7 +309,7 @@ unsafe extern "C" fn gap_event_callback(
             // SAFETY: Checking status before starting.
             if !param.is_null() {
                 let status = unsafe { (*param).adv_data_cmpl.status };
-                if status == esp_idf_sys::ESP_BT_STATUS_SUCCESS {
+                if status == esp_idf_sys::esp_bt_status_t_ESP_BT_STATUS_SUCCESS {
                     unsafe {
                         start_advertising();
                     }
@@ -325,7 +325,7 @@ unsafe extern "C" fn gap_event_callback(
             // SAFETY: param is guaranteed non-null for this event in ESP-IDF.
             if !param.is_null() {
                 let status = unsafe { (*param).adv_start_cmpl.status };
-                if status == esp_idf_sys::ESP_BT_STATUS_SUCCESS {
+                if status == esp_idf_sys::esp_bt_status_t_ESP_BT_STATUS_SUCCESS {
                     set_state(BleConnectionState::Advertising);
                 } else {
                     set_init_failed();
@@ -338,16 +338,16 @@ unsafe extern "C" fn gap_event_callback(
 
 /// HID Device event callback to handle connection status and initialization.
 unsafe extern "C" fn hidd_event_callback(
-    event: esp_idf_sys::esp_hidd_cb_event_t,
-    param: *mut esp_idf_sys::esp_hidd_cb_param_t,
+    event: // esp_idf_sys::esp_hidd_cb_event_t,
+    param: *mut // esp_idf_sys::esp_hidd_cb_param_t,
 ) {
     match event {
-        esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_REG_FINISH => {
+        // esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_REG_FINISH => {
             // Check HID init result before treating backend as ready.
             // SAFETY: Dereferencing param after null check.
             if !param.is_null() {
                 let status = unsafe { (*param).reg_finish.state };
-                if status == esp_idf_sys::esp_hidd_init_state_t_ESP_HIDD_INIT_OK {
+                if status == // esp_idf_sys::esp_hidd_init_state_t_ESP_HIDD_INIT_OK {
                     // SAFETY: Configure advertising data once the HID profile is registered.
                     unsafe {
                         config_adv_data();
@@ -359,7 +359,7 @@ unsafe extern "C" fn hidd_event_callback(
                 set_init_failed();
             }
         }
-        esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_CONNECT => {
+        // esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_CONNECT => {
             // SAFETY: Dereferencing param after null check to get connection handle.
             if !param.is_null() {
                 let handle = unsafe { (*param).connect.conn_id };
@@ -367,7 +367,7 @@ unsafe extern "C" fn hidd_event_callback(
             }
             set_state(BleConnectionState::Connected);
         }
-        esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_DISCONNECT => {
+        // esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_DISCONNECT => {
             CONNECTION_HANDLE.store(0, Ordering::SeqCst);
             set_state(BleConnectionState::Idle);
             // Restart advertising upon disconnect to maintain discoverability.

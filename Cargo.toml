@@ -23,3 +23,5 @@ expect_used = "deny"
 unwrap_used = "deny"
 
 [workspace.dependencies]
+home = "=0.5.11"
+tempfile = "=3.16.0"
