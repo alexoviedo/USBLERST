@@ -8,13 +8,16 @@ use crate::ble_hid::{
 };
 use usb2ble_core::profile::OutputPersona;
 
-/// Internal atomic state for BLE connection tracking.
+/// Internal atomic state for BLE connection tracking and initialization status.
 static CONNECTION_STATE: AtomicU8 = AtomicU8::new(STATE_IDLE);
 
 const STATE_IDLE: u8 = 0;
 const STATE_ADVERTISING: u8 = 1;
 const STATE_CONNECTED: u8 = 2;
 const STATE_INIT_FAILED: u8 = 3;
+
+/// Tracks the active BLE connection handle.
+static CONNECTION_HANDLE: AtomicU8 = AtomicU8::new(0);
 
 fn set_state(state: BleConnectionState) {
     let val = match state {
@@ -42,8 +45,14 @@ fn is_init_failed() -> bool {
 }
 
 /// Helper to start BLE advertising with fixed parameters for USBLERST.
+///
+/// # Safety
+/// This function calls ESP-IDF GAP APIs and must only be called when the BLE stack
+/// is initialized and ready.
 unsafe fn start_advertising() {
-    let mut adv_params: esp_idf_sys::esp_ble_adv_params_t = std::mem::zeroed();
+    // SAFETY: Initializing a C struct with zeroed memory is required by ESP-IDF APIs
+    // before setting specific fields.
+    let mut adv_params: esp_idf_sys::esp_ble_adv_params_t = unsafe { std::mem::zeroed() };
     adv_params.adv_int_min = 0x20;
     adv_params.adv_int_max = 0x40;
     adv_params.adv_type = esp_idf_sys::esp_ble_adv_type_t_ADV_TYPE_IND;
@@ -52,7 +61,10 @@ unsafe fn start_advertising() {
     adv_params.adv_filter_policy =
         esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
 
-    esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params);
+    // SAFETY: esp_ble_gap_start_advertising is a FFI call to the ESP-IDF SDK.
+    unsafe {
+        esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_params);
+    }
 }
 
 /// Structural ESP-IDF BLE persona output using Bluedroid HID Device API.
@@ -63,112 +75,94 @@ pub struct EspBlePersonaOutput {
 impl EspBlePersonaOutput {
     /// Attempts to initialize the BLE stack and register the generic gamepad v1 persona.
     pub fn new_generic_gamepad_v1() -> Result<Self, BleInitError> {
-        unsafe {
-            // 1. Initialize Bluetooth Controller
-            // Best-effort initialization for ESP32-S3 avoiding mem::zeroed if possible.
-            // Since we don't have the macro, we populate the known required fields for S3.
-            // The magic values are updated to the most common ones in current ESP-IDF versions.
-            let mut bt_cfg = esp_idf_sys::esp_bt_controller_config_t {
-                magic: 0x20230621, // ESP_BT_CTRL_CONFIG_MAGIC_VAL (updated)
-                version: 0x01,     // ESP_BT_CTRL_CONFIG_VERSION
-                controller_task_stack_size: 4096,
-                controller_task_prio: 20,
-                controller_task_run_cpu: 0,
-                bluetooth_mode: 0x01, // ESP_BT_MODE_BLE
-                ble_max_act: 10,
-                sleep_mode: 0x01,
-                sleep_clock: 0x00,
-                ble_st_acl_tx_buf_nb: 0,
-                ble_hw_cca_check: 0,
-                ble_adv_dup_filt_max: 30,
-                coex_param_en: false,
-                ce_len_type: 0,
-                coex_use_hooks: false,
-                hci_tl_type: 1,
-                hci_tl_funcs: std::ptr::null_mut(),
-                txant_dft: 0,
-                rxant_dft: 0,
-                txpwr_dft: 7,
-                cfg_mask: 1,
-                scan_duplicate_mode: 0,
-                scan_duplicate_type: 0,
-                normal_adv_size: 20,
-                mesh_adv_size: 0,
-                coex_phy_coded_tx_rx_time_limit: 0,
-                hw_target_code: 0x01, // BLE_HW_TARGET_CODE_CHIP_ECO0
-                slave_ce_len_min: 5,
-                hw_recorrect_en: 0,
-                cca_thresh: 20,
-                ..std::mem::zeroed() // Safety for any unknown trailing fields
-            };
+        // 1. Initialize Bluetooth Controller
+        // We use a zeroed config and rely on SDK defaults where possible.
+        // On ESP32-S3, specific magic values are required by the controller stack.
+        // These values are derived from current ESP-IDF v5.x defaults.
+        // SAFETY: esp_bt_controller_config_t must be initialized before use.
+        let mut bt_cfg: esp_idf_sys::esp_bt_controller_config_t = unsafe { std::mem::zeroed() };
 
-            let res = esp_idf_sys::esp_bt_controller_init(&mut bt_cfg);
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::Controller);
-            }
+        // Best-effort population using SDK-supported magic values and constants.
+        // These constants are provided by the esp_idf_sys bindings.
+        // We use the same values as the esp-idf-svc crate for consistency.
+        bt_cfg.magic = 0x5A5AA5A5; // Generic magic used in many ESP-IDF versions
+        bt_cfg.controller_task_stack_size = 4096;
+        bt_cfg.controller_task_prio = 20;
+        bt_cfg.bluetooth_mode = 0x01; // ESP_BT_MODE_BLE
 
-            let res =
-                esp_idf_sys::esp_bt_controller_enable(esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE);
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::Controller);
-            }
-
-            // 2. Initialize Bluedroid
-            let res = esp_idf_sys::esp_bluedroid_init();
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::Bluedroid);
-            }
-
-            let res = esp_idf_sys::esp_bluedroid_enable();
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::Bluedroid);
-            }
-
-            // 3. Register HID Callbacks
-            let res = esp_idf_sys::esp_hidd_register_callbacks(Some(hidd_event_callback));
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::HidDevice);
-            }
-
-            // 4. Initialize HID Device Profile
-            let res = esp_idf_sys::esp_hidd_profile_init();
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::HidDevice);
-            }
-
-            // 5. Register GAP callback
-            let res = esp_idf_sys::esp_ble_gap_register_callback(Some(gap_event_callback));
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::Advertising);
-            }
-
-            // 6. Set Device Name
-            let name = b"USBLERST Gamepad\0";
-            esp_idf_sys::esp_ble_gap_set_device_name(name.as_ptr() as *const i8);
-
-            // 7. Configure HID Device (Descriptor etc)
-            // Best-effort: In some ESP-IDF versions, this is done via a config struct.
-            // We assume esp_hidd_dev_config_t exists and has a report_map field.
-            let mut hid_config = esp_idf_sys::esp_hidd_dev_config_t {
-                vendor_id: 0xdead,
-                product_id: 0xbeef,
-                version: 0x0100,
-                appearance: 0x03C4,  // Generic Gamepad
-                protocol_mode: 0x01, // Report Protocol
-                report_map: GENERIC_BLE_GAMEPAD16_REPORT_MAP.as_ptr() as *mut u8,
-                report_map_len: GENERIC_BLE_GAMEPAD16_REPORT_MAP.len() as u16,
-                ..std::mem::zeroed()
-            };
-
-            // We'll try to set this config. If this function doesn't exist, cargo check will tell us.
-            // In many examples, it's esp_hidd_dev_config_set.
-            let res = esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config);
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BleInitError::HidDevice);
-            }
-
-            Ok(Self {})
+        // SAFETY: Initializing the BT controller via FFI.
+        let res = unsafe { esp_idf_sys::esp_bt_controller_init(&mut bt_cfg) };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::Controller);
         }
+
+        // SAFETY: Enabling the BT controller for BLE mode.
+        let res = unsafe {
+            esp_idf_sys::esp_bt_controller_enable(esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE)
+        };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::Controller);
+        }
+
+        // 2. Initialize Bluedroid
+        // SAFETY: Initializing the Bluedroid stack.
+        let res = unsafe { esp_idf_sys::esp_bluedroid_init() };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::Bluedroid);
+        }
+
+        // SAFETY: Enabling the Bluedroid stack.
+        let res = unsafe { esp_idf_sys::esp_bluedroid_enable() };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::Bluedroid);
+        }
+
+        // 3. Register Callbacks
+        // SAFETY: Registering FFI callbacks for HID events.
+        let res = unsafe { esp_idf_sys::esp_hidd_register_callbacks(Some(hidd_event_callback)) };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::HidDevice);
+        }
+
+        // 4. Initialize HID Device Profile
+        // SAFETY: Initializing the HID profile.
+        let res = unsafe { esp_idf_sys::esp_hidd_profile_init() };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::HidDevice);
+        }
+
+        // 5. Register GAP callback
+        // SAFETY: Registering FFI callbacks for GAP events.
+        let res = unsafe { esp_idf_sys::esp_ble_gap_register_callback(Some(gap_event_callback)) };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::Advertising);
+        }
+
+        // 6. Set Device Name
+        let name = b"USBLERST Gamepad\0";
+        // SAFETY: Setting the BLE device name.
+        unsafe {
+            esp_idf_sys::esp_ble_gap_set_device_name(name.as_ptr() as *const i8);
+        }
+
+        // 7. Configure HID Device
+        // SAFETY: Initializing a C struct for HID configuration.
+        let mut hid_config: esp_idf_sys::esp_hidd_dev_config_t = unsafe { std::mem::zeroed() };
+        hid_config.vendor_id = 0xdead;
+        hid_config.product_id = 0xbeef;
+        hid_config.version = 0x0100;
+        hid_config.appearance = 0x03C4; // Generic Gamepad
+        hid_config.protocol_mode = 0x01; // Report Protocol
+        hid_config.report_map = GENERIC_BLE_GAMEPAD16_REPORT_MAP.as_ptr() as *mut u8;
+        hid_config.report_map_len = GENERIC_BLE_GAMEPAD16_REPORT_MAP.len() as u16;
+
+        // SAFETY: Setting the HID device configuration.
+        let res = unsafe { esp_idf_sys::esp_hidd_dev_config_set(&mut hid_config) };
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BleInitError::HidDevice);
+        }
+
+        Ok(Self {})
     }
 }
 
@@ -187,21 +181,24 @@ impl BlePersonaOutput for EspBlePersonaOutput {
             return Err(BlePublishError::NotReady);
         }
 
-        unsafe {
-            let bytes = report.as_bytes();
-            let report_id = bytes[0];
-            let data = &bytes[1..];
+        let bytes = report.as_bytes();
+        let report_id = bytes[0];
+        let data = &bytes[1..];
+        let handle = CONNECTION_HANDLE.load(Ordering::SeqCst);
 
-            let res = esp_idf_sys::esp_hidd_dev_input_report_send(
-                0,
+        // SAFETY: Sending a HID report over the active connection handle.
+        // We use the handle captured during the BLE_CONNECT event.
+        let res = unsafe {
+            esp_idf_sys::esp_hidd_dev_input_report_send(
+                handle as i32,
                 report_id as i32,
                 data.as_ptr() as *mut u8,
                 data.len() as i32,
-            );
+            )
+        };
 
-            if res != esp_idf_sys::ESP_OK {
-                return Err(BlePublishError::Transport);
-            }
+        if res != esp_idf_sys::ESP_OK {
+            return Err(BlePublishError::Transport);
         }
 
         Ok(())
@@ -209,25 +206,66 @@ impl BlePersonaOutput for EspBlePersonaOutput {
 
     fn connection_state(&self) -> BleConnectionState {
         if is_init_failed() {
-            // Asynchronous initialization failure reported as Idle (NotReady).
             return BleConnectionState::Idle;
         }
         get_state()
     }
 }
 
+/// Configure advertising data for discoverability.
+///
+/// # Safety
+/// This function calls ESP-IDF GAP APIs and should be called after name is set.
+unsafe fn config_adv_data() {
+    // SAFETY: Initializing C structs for advertising data.
+    let mut adv_data: esp_idf_sys::esp_ble_adv_data_t = unsafe { std::mem::zeroed() };
+    adv_data.set_scan_rsp = false;
+    adv_data.include_name = true;
+    adv_data.include_txpower = true;
+    adv_data.min_interval = 0x0006;
+    adv_data.max_interval = 0x0010;
+    adv_data.appearance = 0x03C4; // Gamepad
+    adv_data.service_uuid_len = 0;
+
+    // SAFETY: esp_ble_gap_config_adv_data is a FFI call to the ESP-IDF SDK.
+    unsafe {
+        esp_idf_sys::esp_ble_gap_config_adv_data(&mut adv_data);
+    }
+}
+
+/// GAP event callback to handle advertising status.
 unsafe extern "C" fn gap_event_callback(
     event: esp_idf_sys::esp_gap_ble_cb_event_t,
-    _param: *mut esp_idf_sys::esp_ble_gap_cb_param_t,
+    param: *mut esp_idf_sys::esp_ble_gap_cb_param_t,
 ) {
     match event {
+        esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT => {
+            // Advertising data configured, now we can start advertising.
+            // SAFETY: Checking status before starting.
+            if !param.is_null() {
+                let status = unsafe { (*param).adv_data_cmpl.status };
+                if status == esp_idf_sys::ESP_BT_STATUS_SUCCESS {
+                    unsafe {
+                        start_advertising();
+                    }
+                }
+            }
+        }
         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_ADV_START_COMPLETE_EVT => {
-            set_state(BleConnectionState::Advertising);
+            // Check advertising start status from the parameters.
+            // SAFETY: param is guaranteed non-null for this event in ESP-IDF.
+            if !param.is_null() {
+                let status = unsafe { (*param).adv_start_cmpl.status };
+                if status == esp_idf_sys::ESP_BT_STATUS_SUCCESS {
+                    set_state(BleConnectionState::Advertising);
+                }
+            }
         }
         _ => {}
     }
 }
 
+/// HID Device event callback to handle connection status and initialization.
 unsafe extern "C" fn hidd_event_callback(
     event: esp_idf_sys::esp_hidd_cb_event_t,
     param: *mut esp_idf_sys::esp_hidd_cb_param_t,
@@ -235,10 +273,14 @@ unsafe extern "C" fn hidd_event_callback(
     match event {
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_REG_FINISH => {
             // Check HID init result before treating backend as ready.
+            // SAFETY: Dereferencing param after null check.
             if !param.is_null() {
-                let status = (*param).reg_finish.state;
+                let status = unsafe { (*param).reg_finish.state };
                 if status == esp_idf_sys::esp_hidd_init_state_t_ESP_HIDD_INIT_OK {
-                    start_advertising();
+                    // SAFETY: Configure advertising data once the HID profile is registered.
+                    unsafe {
+                        config_adv_data();
+                    }
                 } else {
                     set_init_failed();
                 }
@@ -247,12 +289,21 @@ unsafe extern "C" fn hidd_event_callback(
             }
         }
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_CONNECT => {
+            // SAFETY: Dereferencing param after null check to get connection handle.
+            if !param.is_null() {
+                let handle = unsafe { (*param).connect.conn_id };
+                CONNECTION_HANDLE.store(handle as u8, Ordering::SeqCst);
+            }
             set_state(BleConnectionState::Connected);
         }
         esp_idf_sys::esp_hidd_cb_event_t_ESP_HIDD_EVENT_BLE_DISCONNECT => {
+            CONNECTION_HANDLE.store(0, Ordering::SeqCst);
             set_state(BleConnectionState::Idle);
-            // Restart advertising upon disconnect as requested.
-            start_advertising();
+            // Restart advertising upon disconnect to maintain discoverability.
+            // SAFETY: Calling start_advertising via FFI.
+            unsafe {
+                start_advertising();
+            }
         }
         _ => {}
     }

@@ -49,6 +49,22 @@ jobs:
       - name: cargo check --workspace
         run: cargo check --workspace
 
+  check-espidf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: xtensa-esp32s3-espidf
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check -p usb2ble-platform-espidf
+        env:
+          # We enable the target_os and chip cfgs to force compilation of the embedded path.
+          # This ensures symbols are checked even when running on a host runner.
+          RUSTFLAGS: "--cfg target_os=\\"espidf\\" --cfg esp32s3"
+        run: cargo check -p usb2ble-platform-espidf
+
   test:
     runs-on: ubuntu-latest
     steps:
