@@ -56,7 +56,7 @@ jobs:
       - uses: esp-rs/xtensa-toolchain@v1.5
         with:
           default: true
-          build-targets: esp32s3
+          buildtargets: esp32s3
           ldproxy: false
       - uses: Swatinem/rust-cache@v2
       - name: cargo check -p usb2ble-platform-espidf (real target)
