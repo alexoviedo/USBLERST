@@ -286,6 +286,8 @@ unsafe extern "C" fn gap_event_callback(
                 let status = unsafe { (*param).adv_start_cmpl.status };
                 if status == esp_idf_sys::ESP_BT_STATUS_SUCCESS {
                     set_state(BleConnectionState::Advertising);
+                } else {
+                    set_init_failed();
                 }
             }
         }
