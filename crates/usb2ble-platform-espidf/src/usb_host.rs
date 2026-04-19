@@ -288,7 +288,7 @@ impl EspUsbHostIngress {
                     if let Some(transfer) = self.input_transfers.remove(&address) {
                         // SAFETY: standard ESP-IDF USB host transfer cancel/free
                         unsafe {
-                            let _ = // esp_idf_sys::usb_host_transfer_cancel(transfer);
+                            let _ = 0; // esp_idf_sys::usb_host_transfer_cancel(transfer);
                             // NOTE: transfer_free is typically called in the callback after cancellation
                         }
                     }
@@ -435,7 +435,7 @@ impl EspUsbHostIngress {
         }
 
         let mut address: u8 = 0;
-        let _ = // esp_idf_sys::usb_host_device_addr(dev_hdl, &mut address);
+        let _ = 0; // esp_idf_sys::usb_host_device_addr(dev_hdl, &mut address);
         self.input_transfers.insert(address, transfer);
 
         Ok(())
@@ -486,7 +486,7 @@ unsafe extern "C" fn input_report_cb(transfer: *mut esp_idf_sys::usb_transfer_t)
     let actual_len = unsafe { (*transfer).actual_num_bytes } as usize;
 
     let mut address: u8 = 0;
-    let _ = // esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
+    let _ = 0; // esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
     let device_id = UsbDeviceId::new(address);
 
     if (*transfer).status == esp_idf_sys::usb_transfer_status_t_USB_TRANSFER_STATUS_COMPLETED {
@@ -555,7 +555,7 @@ unsafe extern "C" fn transfer_cb(transfer: *mut esp_idf_sys::usb_transfer_t) {
     let (data, len) = extract_report_descriptor(transfer);
     if len > 0 {
         let mut address: u8 = 0;
-        let _ = // esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
+        let _ = 0; // esp_idf_sys::usb_host_device_addr((*transfer).device_handle, &mut address);
 
         staging
             .events
