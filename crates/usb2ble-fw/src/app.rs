@@ -1048,6 +1048,9 @@ fn map_ble_link_state(
         usb2ble_platform_espidf::ble_hid::BleConnectionState::Connected => {
             usb2ble_proto::messages::BleLinkState::Connected
         }
+        usb2ble_platform_espidf::ble_hid::BleConnectionState::InitializationFailed => {
+            usb2ble_proto::messages::BleLinkState::Idle
+        }
     }
 }
 

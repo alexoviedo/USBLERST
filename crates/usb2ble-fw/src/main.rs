@@ -473,17 +473,17 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     let mut console_buffer = FramedConsoleBuffer::new();
 
     // Attempt to initialize the real BLE backend.
-    let mut real_ble =
+    let mut real_ble_result =
         usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
     let mut recording_ble = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
 
-    let is_real = real_ble.is_ok();
-    if let Err(ref e) = real_ble {
+    let mut is_real = real_ble_result.is_ok();
+    if let Err(ref e) = real_ble_result {
         println!("warning: real ble backend initialization failed: {}", e);
         println!("falling back to recording mode");
     }
 
-    let ble_state = if let Ok(ref b) = real_ble {
+    let ble_state = if let Ok(ref b) = real_ble_result {
         b.connection_state()
     } else {
         recording_ble.connection_state()
@@ -518,8 +518,19 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     println!("*****************************************");
 
     loop {
-        let ble_state = if let Ok(ref b) = real_ble {
-            b.connection_state()
+        // Detect async initialization failure and fallback
+        if is_real {
+            if let Ok(ref b) = real_ble_result {
+                if b.connection_state() == BleConnectionState::InitializationFailed {
+                    println!("warning: real ble backend async initialization failed");
+                    println!("switching to recording fallback");
+                    is_real = false;
+                }
+            }
+        }
+
+        let ble_state = if is_real {
+            real_ble_result.as_ref().unwrap().connection_state()
         } else {
             recording_ble.connection_state()
         };
@@ -559,8 +570,8 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
 
             // 5. Drain all available USB events through the app/runtime bridge logic
             loop {
-                let outcome = if let Ok(ref mut ble) = real_ble {
-                    app.service_usb_once_persona(usb_host, ble)
+                let outcome = if is_real {
+                    app.service_usb_once_persona(usb_host, real_ble_result.as_mut().unwrap())
                 } else {
                     app.service_usb_once_persona(usb_host, &mut recording_ble)
                 };

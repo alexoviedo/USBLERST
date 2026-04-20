@@ -53,18 +53,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Remove rust-toolchain.toml to allow using the custom Xtensa toolchain
+        run: rm rust-toolchain.toml
+      - uses: esp-rs/xtensa-toolchain@v1.5
         with:
-          targets: xtensa-esp32s3-espidf
-          components: rustfmt, clippy
+          default: true
+          buildtargets: esp32s3
+          ldproxy: false
       - uses: Swatinem/rust-cache@v2
-      - name: cargo check -p usb2ble-platform-espidf (target-aware)
-        env:
-          # This job validates the embedded code path by enabling target-specific cfgs.
-          # Note: A full xtensa-esp32s3-espidf build requires a specialized runner/container,
-          # but checking with cfgs provides the strongest honest validation in this workflow.
-          RUSTFLAGS: "--cfg target_os=\\"espidf\\" --cfg esp32s3"
-        run: cargo check -p usb2ble-platform-espidf
+      - name: cargo check -p usb2ble-platform-espidf (real target)
+        run: cargo check -p usb2ble-platform-espidf --target xtensa-esp32s3-espidf -Zbuild-std
 
   test:
     runs-on: ubuntu-latest
