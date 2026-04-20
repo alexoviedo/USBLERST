@@ -86,11 +86,11 @@ impl EspUartBufferedConsole {
         // SAFETY: fcntl is a standard ESP-IDF system call.
         // We set STDIN to non-blocking so pull_rx_into does not stall.
         unsafe {
-            let flags = fcntl(STDIN_FILENO as i32, F_GETFL as i32);
+            let flags = fcntl(STDIN_FILENO, F_GETFL);
             if flags == -1 {
                 return Err(ConsoleError::Transport);
             }
-            if fcntl(STDIN_FILENO as i32, F_SETFL as i32, flags | O_NONBLOCK as i32) == -1 {
+            if fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK as i32) == -1 {
                 return Err(ConsoleError::Transport);
             }
         }
@@ -106,7 +106,13 @@ impl EspUartBufferedConsole {
         let mut temp_buf = [0_u8; 64];
 
         // SAFETY: read from STDIN_FILENO is safe on ESP-IDF when using standard VFS.
-        let bytes_read = unsafe { read(STDIN_FILENO as i32 as i32 as i32, temp_buf.as_mut_ptr() as *mut _, 64) };
+        let bytes_read = unsafe {
+            read(
+                STDIN_FILENO,
+                temp_buf.as_mut_ptr() as *mut std::ffi::c_void,
+                64,
+            )
+        };
 
         if bytes_read > 0 {
             let len = bytes_read as usize;
@@ -142,8 +148,13 @@ impl EspUartBufferedConsole {
             }
 
             // SAFETY: write to STDOUT_FILENO is safe on ESP-IDF when using standard VFS.
-            let written =
-                unsafe { write(STDOUT_FILENO as i32 as i32, temp_buf.as_ptr() as *const _, drained as _) };
+            let written = unsafe {
+                write(
+                    STDOUT_FILENO,
+                    temp_buf.as_ptr() as *const std::ffi::c_void,
+                    drained as u32,
+                )
+            };
 
             if written < 0 {
                 return Err(ConsoleError::Transport);

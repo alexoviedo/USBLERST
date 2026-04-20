@@ -477,7 +477,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
         usb2ble_platform_espidf::ble_hid::EspBlePersonaOutput::new_generic_gamepad_v1();
     let mut recording_ble = PersonaWireRecordingBleOutput::new(BleConnectionState::Idle);
 
-    let mut is_real = real_ble.is_ok();
+    let is_real = real_ble.is_ok();
     if let Err(ref e) = real_ble {
         println!("warning: real ble backend initialization failed: {}", e);
         println!("falling back to recording mode");
@@ -517,24 +517,20 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     println!("* console:  READY (newline-terminated)");
     println!("*****************************************");
 
+    let mut is_real = is_real;
     loop {
-        // Update is_real based on async failure.
         if is_real {
             if let Ok(ref b) = real_ble {
                 if b.is_failed() {
                     println!("warning: real ble backend async failure detected");
-                    println!("falling back to recording mode");
+                    println!("switching to recording mode fallback");
                     is_real = false;
                 }
             }
         }
 
         let ble_state = if is_real {
-            if let Ok(ref b) = real_ble {
-                b.connection_state()
-            } else {
-                BleConnectionState::Idle
-            }
+            real_ble.as_ref().unwrap().connection_state()
         } else {
             recording_ble.connection_state()
         };
@@ -575,11 +571,7 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
             // 5. Drain all available USB events through the app/runtime bridge logic
             loop {
                 let outcome = if is_real {
-                    if let Ok(ref mut ble) = real_ble {
-                        app.service_usb_once_persona(usb_host, ble)
-                    } else {
-                        app.service_usb_once_persona(usb_host, &mut recording_ble)
-                    }
+                    app.service_usb_once_persona(usb_host, real_ble.as_mut().unwrap())
                 } else {
                     app.service_usb_once_persona(usb_host, &mut recording_ble)
                 };
