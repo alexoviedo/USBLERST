@@ -106,7 +106,13 @@ impl EspUartBufferedConsole {
         let mut temp_buf = [0_u8; 64];
 
         // SAFETY: read from STDIN_FILENO is safe on ESP-IDF when using standard VFS.
-        let bytes_read = unsafe { read(STDIN_FILENO, temp_buf.as_mut_ptr() as *mut _, 64) };
+        let bytes_read = unsafe {
+            read(
+                STDIN_FILENO,
+                temp_buf.as_mut_ptr() as *mut std::ffi::c_void,
+                64,
+            )
+        };
 
         if bytes_read > 0 {
             let len = bytes_read as usize;
@@ -142,8 +148,13 @@ impl EspUartBufferedConsole {
             }
 
             // SAFETY: write to STDOUT_FILENO is safe on ESP-IDF when using standard VFS.
-            let written =
-                unsafe { write(STDOUT_FILENO, temp_buf.as_ptr() as *const _, drained as u32) };
+            let written = unsafe {
+                write(
+                    STDOUT_FILENO,
+                    temp_buf.as_ptr() as *const std::ffi::c_void,
+                    drained as u32,
+                )
+            };
 
             if written < 0 {
                 return Err(ConsoleError::Transport);

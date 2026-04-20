@@ -517,9 +517,20 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
     println!("* console:  READY (newline-terminated)");
     println!("*****************************************");
 
+    let mut is_real = is_real;
     loop {
-        let ble_state = if let Ok(ref b) = real_ble {
-            b.connection_state()
+        if is_real {
+            if let Ok(ref b) = real_ble {
+                if b.is_failed() {
+                    println!("warning: real ble backend async failure detected");
+                    println!("switching to recording mode fallback");
+                    is_real = false;
+                }
+            }
+        }
+
+        let ble_state = if is_real {
+            real_ble.as_ref().unwrap().connection_state()
         } else {
             recording_ble.connection_state()
         };
@@ -559,8 +570,8 @@ fn run_embedded_bridge_demo() -> Result<(), EmbeddedDemoError> {
 
             // 5. Drain all available USB events through the app/runtime bridge logic
             loop {
-                let outcome = if let Ok(ref mut ble) = real_ble {
-                    app.service_usb_once_persona(usb_host, ble)
+                let outcome = if is_real {
+                    app.service_usb_once_persona(usb_host, real_ble.as_mut().unwrap())
                 } else {
                     app.service_usb_once_persona(usb_host, &mut recording_ble)
                 };

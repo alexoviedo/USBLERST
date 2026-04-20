@@ -219,7 +219,7 @@ impl EspUsbHostIngress {
         // SAFETY: Standard ESP-IDF USB host event handling calls.
         unsafe {
             // Handle library events
-            let res = esp_idf_sys::usb_host_lib_handle_events(0);
+            let res = esp_idf_sys::usb_host_lib_handle_events(0, &mut 0);
             if res != esp_idf_sys::ESP_OK && res != esp_idf_sys::ESP_ERR_TIMEOUT {
                 return Err(UsbHostError::Transport);
             }
@@ -326,7 +326,7 @@ impl EspUsbHostIngress {
         }
 
         let mut offset = 0;
-        let total_len = (*config_desc).wTotalLength as usize;
+        let total_len = (*config_desc).wTotalLength as usize as usize;
 
         // Simple iterator through descriptors to find the first HID interface and its interrupt IN endpoint
         while offset < total_len {
@@ -528,7 +528,7 @@ unsafe extern "C" fn client_event_cb(
             staging
                 .events
                 .push_back(UsbEvent::DeviceAttached(DeviceMeta {
-                    device_id: UsbDeviceId::new(msg.new_dev.address),
+                    device_id: UsbDeviceId::new(msg.__bindgen_anon_1.new_dev.address),
                     vendor_id: 0,
                     product_id: 0,
                 }));
@@ -537,7 +537,7 @@ unsafe extern "C" fn client_event_cb(
             staging
                 .events
                 .push_back(UsbEvent::DeviceDetached(UsbDeviceId::new(
-                    msg.dev_gone.address,
+                    msg.__bindgen_anon_1.dev_gone.address,
                 )));
         }
         _ => {}
